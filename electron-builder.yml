@@ -1,0 +1,19 @@
+appId: com.carbonsync.app
+productName: CarbonSync
+forceCodeSigning: false
+
+directories:
+  output: dist
+
+win:
+  target:
+    - portable
+  icon: assets/icon.ico
+  signAndEditExecutable: false
+
+files:
+  - src/**/*
+  - package.json
+
+extraMetadata:
+  main: src/ui/main.js

@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>CarbonSync</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #0a0a0f; color: #e0e0e0; font-family: 'Segoe UI', system-ui, sans-serif; padding: 24px; }
+    h1 { font-size: 22px; color: #22c55e; margin-bottom: 4px; }
+    .sub { color: #888; font-size: 13px; margin-bottom: 24px; }
+    .card { background: #14141f; border: 1px solid #2a2a3a; border-radius: 10px; padding: 16px; margin-bottom: 12px; }
+    .card h3 { font-size: 14px; color: #3b82f6; margin-bottom: 8px; }
+    .row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #1a1a2a; font-size: 13px; }
+    .row:last-child { border: none; }
+    .label { color: #888; }
+    .value { font-weight: 600; color: #e0e0e0; }
+    .value.green { color: #22c55e; }
+    .btn { background: #3b82f6; color: white; border: none; padding: 8px 20px; border-radius: 6px; font-size: 13px; font-weight: 600; cursor: pointer; margin-right: 8px; margin-top: 8px; }
+    .btn:hover { background: #2563eb; }
+    .btn.green { background: #22c55e; }
+    .btn.green:hover { background: #16a34a; }
+    .btn.red { background: #ef4444; }
+    .btn.red:hover { background: #dc2626; }
+    .folder-item { display: flex; justify-content: space-between; align-items: center; padding: 10px; background: #0a0a0f; border-radius: 6px; margin-top: 8px; }
+    .folder-name { font-weight: 600; font-size: 14px; }
+    .folder-path { color: #888; font-size: 12px; }
+    .folder-stats { color: #888; font-size: 12px; }
+    .empty { color: #555; font-style: italic; font-size: 13px; padding: 16px 0; }
+    #status-badge { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: #22c55e; margin-right: 6px; }
+  </style>
+</head>
+<body>
+  <h1><span id="status-badge"></span>CarbonSync</h1>
+  <div class="sub" id="subtitle">Loading...</div>
+
+  <div class="card">
+    <h3>Server Info</h3>
+    <div class="row"><span class="label">Device</span><span class="value" id="device-name">—</span></div>
+    <div class="row"><span class="label">Port</span><span class="value" id="port">—</span></div>
+    <div class="row"><span class="label">Connected Clients</span><span class="value green" id="clients">0</span></div>
+    <div class="row"><span class="label">API Key</span><span class="value" id="api-key" style="font-size:11px;word-break:break-all;">—</span></div>
+  </div>
+
+  <div class="card">
+    <h3>Synced Folders</h3>
+    <div id="folders-list"><div class="empty">No folders synced yet</div></div>
+    <button class="btn green" id="btn-add">Add Folder</button>
+  </div>
+
+  <div class="card">
+    <h3>Discovered Devices</h3>
+    <div id="devices-list"><div class="empty">Searching...</div></div>
+  </div>
+
+  <script>
+    const api = window.carbonsync;
+
+    async function refresh() {
+      const s = await api.getStatus();
+      document.getElementById('subtitle').textContent = s.deviceName ? 'Running as hub server' : 'Starting...';
+      document.getElementById('device-name').textContent = s.deviceName || '—';
+      document.getElementById('port').textContent = s.port || '—';
+      document.getElementById('clients').textContent = s.connectedClients || 0;
+      document.getElementById('api-key').textContent = s.apiKey || '—';
+
+      const fl = document.getElementById('folders-list');
+      if (s.folders && s.folders.length > 0) {
+        fl.innerHTML = s.folders.map(f => `
+          <div class="folder-item">
+            <div>
+              <div class="folder-name">${esc(f.name)}</div>
+              <div class="folder-path">${esc(f.path)}</div>
+              <div class="folder-stats">${f.fileCount} files — ${formatBytes(f.totalSize)}</div>
+            </div>
+            <div>
+              <button class="btn" onclick="rescan('${escA(f.name)}')">Rescan</button>
+              <button class="btn red" onclick="removeFolder('${escA(f.path)}')">Remove</button>
+            </div>
+          </div>
+        `).join('');
+      } else {
+        fl.innerHTML = '<div class="empty">No folders synced yet. Click "Add Folder" to start.</div>';
+      }
+
+      const dl = document.getElementById('devices-list');
+      if (s.discoveredDevices && s.discoveredDevices.length > 0) {
+        dl.innerHTML = s.discoveredDevices.map(d => `
+          <div class="row"><span class="label">${esc(d.hostname)} (${d.role})</span><span class="value">${d.ip}:${d.port}</span></div>
+        `).join('');
+      } else {
+        dl.innerHTML = '<div class="empty">No other CarbonSync devices found on network</div>';
+      }
+    }
+
+    document.getElementById('btn-add').addEventListener('click', async () => {
+      const folderPath = await api.pickFolder();
+      if (folderPath) {
+        await api.addFolder(folderPath);
+        refresh();
+      }
+    });
+
+    async function rescan(name) { await api.rescan(name); setTimeout(refresh, 2000); }
+    async function removeFolder(p) { await api.removeFolder(p); refresh(); }
+
+    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
+    function escA(s) { return String(s).replace(/'/g, "\\'").replace(/\\/g, '\\\\'); }
+    function formatBytes(b) {
+      if (!b) return '0 B';
+      const k = 1024; const s = ['B','KB','MB','GB','TB'];
+      const i = Math.floor(Math.log(b) / Math.log(k));
+      return (b / Math.pow(k, i)).toFixed(1) + ' ' + s[i];
+    }
+
+    api.onStatusUpdate(refresh);
+    refresh();
+    setInterval(refresh, 10000);
+  </script>
+</body>
+</html>
