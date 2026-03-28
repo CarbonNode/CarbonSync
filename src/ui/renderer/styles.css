@@ -1,0 +1,269 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+:root {
+  --bg: #0a0a0f;
+  --surface: #12121c;
+  --surface2: #1a1a28;
+  --border: #222233;
+  --text: #d0d0d8;
+  --text-dim: #666;
+  --accent: #3b82f6;
+  --green: #22c55e;
+  --red: #ef4444;
+  --yellow: #eab308;
+}
+
+body {
+  background: var(--bg);
+  color: var(--text);
+  font-family: 'Segoe UI', system-ui, sans-serif;
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  font-size: 13px;
+}
+
+/* ---- Header ---- */
+.header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 20px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  background: var(--surface);
+}
+.header-left { display: flex; align-items: center; gap: 10px; }
+.header-left h1 { font-size: 17px; color: var(--green); font-weight: 700; }
+.header-sub { color: var(--text-dim); font-size: 12px; }
+.header-right { display: flex; align-items: center; gap: 14px; font-size: 11px; color: var(--text-dim); }
+.header-stat strong { color: var(--text); }
+
+.badge { display: inline-block; width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.badge.green { background: var(--green); }
+.badge.blue { background: var(--accent); animation: pulse 1.5s infinite; }
+.badge.red { background: var(--red); }
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+.tls-badge { font-size: 10px; padding: 2px 7px; border-radius: 3px; font-weight: 700; letter-spacing: 0.5px; }
+.tls-badge.on { background: #14532d; color: var(--green); }
+.tls-badge.off { background: #451a03; color: var(--yellow); }
+
+/* ---- Tabs ---- */
+.tabs {
+  display: flex;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface);
+  flex-shrink: 0;
+}
+.tab {
+  padding: 9px 20px;
+  background: none;
+  border: none;
+  color: var(--text-dim);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  transition: color 0.15s, border-color 0.15s;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+/* ---- Tab Content ---- */
+.tab-content { flex: 1; overflow: hidden; position: relative; }
+.tab-pane {
+  display: none;
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  padding: 16px 20px;
+}
+.tab-pane.active { display: block; }
+.tab-pane::-webkit-scrollbar { width: 6px; }
+.tab-pane::-webkit-scrollbar-thumb { background: #2a2a3a; border-radius: 3px; }
+
+/* ---- Buttons ---- */
+.btn {
+  background: var(--accent);
+  color: white;
+  border: none;
+  padding: 7px 16px;
+  border-radius: 5px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.btn:hover { background: #2563eb; }
+.btn.green { background: var(--green); }
+.btn.green:hover { background: #16a34a; }
+.btn.red { background: var(--red); }
+.btn.red:hover { background: #dc2626; }
+.btn.sm { font-size: 11px; padding: 3px 10px; }
+.btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--text-dim); }
+.btn.ghost:hover { border-color: var(--accent); color: var(--text); }
+
+.tab-actions { margin-top: 12px; }
+
+/* ---- Folder Cards ---- */
+.folder-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 8px;
+  transition: border-color 0.15s;
+}
+.folder-card:hover { border-color: #333; }
+.folder-header { display: flex; justify-content: space-between; align-items: flex-start; }
+.folder-info { flex: 1; }
+.folder-name { font-weight: 700; font-size: 14px; color: var(--text); }
+.folder-path { color: var(--text-dim); font-size: 11px; margin-top: 2px; font-family: 'Consolas', monospace; }
+.folder-meta { display: flex; gap: 16px; margin-top: 8px; font-size: 11px; color: var(--text-dim); }
+.folder-meta strong { color: var(--text); font-weight: 600; }
+.folder-btns { display: flex; gap: 4px; flex-shrink: 0; margin-left: 12px; }
+
+/* Size bar */
+.size-bar { height: 4px; background: var(--border); border-radius: 2px; margin-top: 10px; overflow: hidden; }
+.size-fill { height: 100%; border-radius: 2px; transition: width 0.5s; }
+.size-fill.small { background: var(--green); }
+.size-fill.medium { background: var(--accent); }
+.size-fill.large { background: var(--yellow); }
+.size-fill.huge { background: var(--red); }
+
+.scan-progress { font-size: 11px; color: var(--accent); margin-top: 6px; min-height: 16px; }
+
+/* ---- Drop Zone ---- */
+.drop-zone {
+  border: 2px dashed var(--border);
+  border-radius: 8px;
+  padding: 24px;
+  text-align: center;
+  margin-top: 12px;
+  transition: border-color 0.2s, background 0.2s;
+}
+.drop-zone.over {
+  border-color: var(--accent);
+  background: rgba(59, 130, 246, 0.05);
+}
+.drop-text { color: var(--text-dim); font-size: 12px; }
+
+/* ---- Activity Feed ---- */
+.activity-item {
+  display: flex;
+  gap: 10px;
+  padding: 7px 0;
+  border-bottom: 1px solid #111118;
+  font-size: 12px;
+  align-items: flex-start;
+}
+.activity-icon { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; margin-top: 5px; }
+.activity-icon.green { background: var(--green); }
+.activity-icon.red { background: var(--red); }
+.activity-icon.blue { background: var(--accent); }
+.activity-icon.dim { background: var(--text-dim); }
+.activity-time { color: #444; font-size: 11px; min-width: 65px; font-family: 'Consolas', monospace; }
+.activity-msg { flex: 1; color: var(--text-dim); }
+.empty { color: #333; font-style: italic; font-size: 12px; padding: 20px 0; text-align: center; }
+
+/* ---- Device Cards ---- */
+.device-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 14px 16px;
+  margin-bottom: 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.device-name { font-weight: 700; font-size: 14px; }
+.device-detail { color: var(--text-dim); font-size: 11px; margin-top: 2px; }
+.device-role {
+  font-size: 10px;
+  padding: 2px 8px;
+  border-radius: 3px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.device-role.server { background: #14532d; color: var(--green); }
+.device-role.client { background: #1e3a5f; color: var(--accent); }
+
+/* ---- Settings ---- */
+.settings-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.setting-group label {
+  display: block;
+  font-size: 11px;
+  color: var(--text-dim);
+  margin-bottom: 4px;
+}
+.setting-group input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 7px 10px;
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+.setting-group input:focus { border-color: var(--accent); }
+
+.setting-section {
+  margin-top: 20px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border);
+}
+.setting-section h4 {
+  font-size: 12px;
+  color: var(--accent);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 10px;
+}
+.setting-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 0;
+  font-size: 12px;
+}
+.setting-row .label { color: var(--text-dim); min-width: 80px; }
+.setting-row .value { flex: 1; color: var(--text); }
+.mono { font-family: 'Consolas', monospace; font-size: 11px; }
+.truncate { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 300px; }
+.copy-btn { flex-shrink: 0; }
+
+/* ---- Toast ---- */
+#toast-container {
+  position: fixed;
+  top: 12px;
+  right: 12px;
+  z-index: 999;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.toast {
+  padding: 8px 16px;
+  border-radius: 6px;
+  font-size: 12px;
+  color: white;
+  background: var(--surface2);
+  border: 1px solid var(--border);
+  box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+  animation: toastIn 0.25s ease;
+}
+.toast.success { border-color: var(--green); }
+.toast.error { border-color: var(--red); }
+.toast.info { border-color: var(--accent); }
+@keyframes toastIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }

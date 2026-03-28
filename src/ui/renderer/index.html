@@ -3,244 +3,101 @@
 <head>
   <meta charset="UTF-8">
   <title>CarbonSync</title>
-  <style>
-    * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #0a0a0f; color: #e0e0e0; font-family: 'Segoe UI', system-ui, sans-serif; display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
-
-    /* Header */
-    .header { padding: 16px 20px 12px; border-bottom: 1px solid #1a1a2a; flex-shrink: 0; }
-    .header h1 { font-size: 20px; color: #22c55e; display: flex; align-items: center; gap: 8px; }
-    .badge { display: inline-block; width: 8px; height: 8px; border-radius: 50%; }
-    .badge.green { background: #22c55e; }
-    .badge.blue { background: #3b82f6; animation: pulse 1.5s infinite; }
-    .badge.yellow { background: #eab308; }
-    @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
-    .header-sub { color: #666; font-size: 12px; margin-top: 2px; }
-    .header-info { display: flex; gap: 16px; margin-top: 6px; font-size: 11px; color: #555; }
-    .header-info span { display: flex; align-items: center; gap: 4px; }
-    .tls-badge { font-size: 10px; padding: 1px 6px; border-radius: 3px; font-weight: 700; }
-    .tls-badge.on { background: #166534; color: #22c55e; }
-    .tls-badge.off { background: #451a03; color: #f59e0b; }
-
-    /* Main content scrollable */
-    .content { flex: 1; overflow-y: auto; padding: 12px 20px; }
-    .content::-webkit-scrollbar { width: 6px; }
-    .content::-webkit-scrollbar-thumb { background: #2a2a3a; border-radius: 3px; }
-
-    /* Cards */
-    .card { background: #14141f; border: 1px solid #2a2a3a; border-radius: 8px; padding: 14px; margin-bottom: 10px; }
-    .card h3 { font-size: 13px; color: #3b82f6; margin-bottom: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
-    .row { display: flex; justify-content: space-between; padding: 5px 0; border-bottom: 1px solid #1a1a2a; font-size: 12px; }
-    .row:last-child { border: none; }
-    .label { color: #666; }
-    .value { font-weight: 600; }
-
-    /* Buttons */
-    .btn { background: #3b82f6; color: white; border: none; padding: 6px 14px; border-radius: 5px; font-size: 12px; font-weight: 600; cursor: pointer; }
-    .btn:hover { background: #2563eb; }
-    .btn.green { background: #22c55e; }
-    .btn.green:hover { background: #16a34a; }
-    .btn.red { background: #ef4444; font-size: 11px; padding: 4px 10px; }
-    .btn.red:hover { background: #dc2626; }
-    .btn.sm { font-size: 11px; padding: 4px 10px; }
-
-    /* Folder items */
-    .folder-item { display: flex; justify-content: space-between; align-items: center; padding: 8px 10px; background: #0a0a0f; border-radius: 6px; margin-top: 6px; }
-    .folder-name { font-weight: 600; font-size: 13px; }
-    .folder-path { color: #555; font-size: 11px; margin-top: 1px; }
-    .folder-stats { color: #555; font-size: 11px; }
-    .folder-btns { display: flex; gap: 4px; }
-
-    /* Progress bar */
-    .progress-bar { height: 3px; background: #1a1a2a; border-radius: 2px; margin-top: 6px; overflow: hidden; }
-    .progress-fill { height: 100%; background: #3b82f6; border-radius: 2px; transition: width 0.3s; }
-
-    /* Activity feed */
-    .activity-feed { max-height: 150px; overflow-y: auto; font-size: 11px; }
-    .activity-feed::-webkit-scrollbar { width: 4px; }
-    .activity-feed::-webkit-scrollbar-thumb { background: #2a2a3a; border-radius: 2px; }
-    .activity-item { padding: 4px 0; border-bottom: 1px solid #111118; color: #555; display: flex; gap: 8px; }
-    .activity-time { color: #333; min-width: 55px; }
-    .activity-msg { flex: 1; }
-    .activity-item.connect { color: #22c55e; }
-    .activity-item.disconnect { color: #ef4444; }
-    .activity-item.change { color: #3b82f6; }
-
-    .empty { color: #333; font-style: italic; font-size: 12px; padding: 10px 0; }
-
-    /* Scan progress */
-    .scan-progress { font-size: 11px; color: #3b82f6; margin-top: 4px; }
-  </style>
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <!-- Header -->
   <div class="header">
-    <h1><span class="badge green" id="status-badge"></span> CarbonSync</h1>
-    <div class="header-sub" id="subtitle">Loading...</div>
-    <div class="header-info">
-      <span>Port: <strong id="port">—</strong></span>
-      <span>Clients: <strong id="clients">0</strong></span>
+    <div class="header-left">
+      <span class="badge green" id="status-badge"></span>
+      <h1>CarbonSync</h1>
+      <span class="header-sub" id="subtitle">Starting...</span>
+    </div>
+    <div class="header-right">
       <span id="tls-status"></span>
-      <span>Fingerprint: <strong id="fingerprint" style="font-family:monospace;">—</strong></span>
+      <span class="header-stat">Port <strong id="port">—</strong></span>
+      <span class="header-stat">Clients <strong id="clients">0</strong></span>
     </div>
   </div>
 
-  <div class="content">
-    <!-- Folders -->
-    <div class="card">
-      <h3>Synced Folders</h3>
-      <div id="folders-list"><div class="empty">No folders synced yet</div></div>
-      <div id="scan-progress" class="scan-progress"></div>
-      <button class="btn green" id="btn-add" style="margin-top:8px;">Add Folder</button>
-    </div>
+  <!-- Tabs -->
+  <div class="tabs">
+    <button class="tab active" data-tab="folders">Folders</button>
+    <button class="tab" data-tab="activity">Activity</button>
+    <button class="tab" data-tab="devices">Devices</button>
+    <button class="tab" data-tab="settings">Settings</button>
+  </div>
 
-    <!-- Activity -->
-    <div class="card">
-      <h3>Activity</h3>
-      <div id="activity-feed" class="activity-feed">
-        <div class="empty">Waiting for activity...</div>
+  <!-- Tab Content -->
+  <div class="tab-content">
+
+    <!-- Folders Tab -->
+    <div class="tab-pane active" id="tab-folders">
+      <div id="folders-list"></div>
+      <div id="scan-progress" class="scan-progress"></div>
+      <div class="tab-actions">
+        <button class="btn green" id="btn-add">+ Add Folder</button>
+      </div>
+      <div class="drop-zone" id="drop-zone">
+        <div class="drop-text">Drop a folder here to sync it</div>
       </div>
     </div>
 
-    <!-- Devices -->
-    <div class="card">
-      <h3>Discovered Devices</h3>
-      <div id="devices-list"><div class="empty">Searching network...</div></div>
+    <!-- Activity Tab -->
+    <div class="tab-pane" id="tab-activity">
+      <div id="activity-feed"></div>
     </div>
 
-    <!-- API Key (collapsible) -->
-    <div class="card">
-      <h3>API Key <button class="btn sm" id="btn-show-key" style="float:right;">Show</button></h3>
-      <div id="api-key-display" style="display:none; font-size:11px; font-family:monospace; word-break:break-all; color:#555; margin-top:4px;"></div>
+    <!-- Devices Tab -->
+    <div class="tab-pane" id="tab-devices">
+      <div id="devices-list"></div>
+    </div>
+
+    <!-- Settings Tab -->
+    <div class="tab-pane" id="tab-settings">
+      <div class="settings-grid">
+        <div class="setting-group">
+          <label>Scan Interval (minutes)</label>
+          <input type="number" id="set-scan-interval" min="1" max="60" value="5">
+        </div>
+        <div class="setting-group">
+          <label>Bandwidth Limit (MB/s, 0 = unlimited)</label>
+          <input type="number" id="set-bandwidth" min="0" value="0">
+        </div>
+        <div class="setting-group">
+          <label>Max Concurrent Transfers</label>
+          <input type="number" id="set-concurrent" min="1" max="16" value="4">
+        </div>
+        <div class="setting-group">
+          <label>Server Port</label>
+          <input type="number" id="set-port" min="1024" max="65535" value="21547">
+        </div>
+      </div>
+      <button class="btn" id="btn-save-settings" style="margin-top:12px;">Save Settings</button>
+
+      <div class="setting-section">
+        <h4>Identity</h4>
+        <div class="setting-row">
+          <span class="label">Fingerprint</span>
+          <span class="value mono" id="fp-display">—</span>
+          <button class="btn sm copy-btn" onclick="copyText('fp-display')">Copy</button>
+        </div>
+        <div class="setting-row">
+          <span class="label">API Key</span>
+          <span class="value mono truncate" id="key-display">—</span>
+          <button class="btn sm copy-btn" onclick="copyText('key-display')">Copy</button>
+        </div>
+        <div class="setting-row">
+          <span class="label">Device ID</span>
+          <span class="value mono truncate" id="device-id">—</span>
+        </div>
+      </div>
     </div>
   </div>
 
-  <script>
-    const api = window.carbonsync;
-    const activityLog = [];
-    const MAX_ACTIVITY = 50;
+  <!-- Toast container -->
+  <div id="toast-container"></div>
 
-    async function refresh() {
-      const s = await api.getStatus();
-      document.getElementById('subtitle').textContent = s.deviceName ? `${s.deviceName} — hub server` : 'Starting...';
-      document.getElementById('port').textContent = s.port || '—';
-      document.getElementById('clients').textContent = s.connectedClients || 0;
-      document.getElementById('fingerprint').textContent = s.fingerprint || '—';
-
-      const tlsEl = document.getElementById('tls-status');
-      if (s.tlsEnabled) {
-        tlsEl.innerHTML = '<span class="tls-badge on">TLS</span>';
-      } else {
-        tlsEl.innerHTML = '<span class="tls-badge off">NO TLS</span>';
-      }
-
-      // Folders
-      const fl = document.getElementById('folders-list');
-      if (s.folders && s.folders.length > 0) {
-        fl.innerHTML = s.folders.map(f => `
-          <div class="folder-item">
-            <div>
-              <div class="folder-name">${esc(f.name)}</div>
-              <div class="folder-path">${esc(f.path)}</div>
-              <div class="folder-stats">${f.fileCount} files — ${fmt(f.totalSize)}</div>
-            </div>
-            <div class="folder-btns">
-              <button class="btn sm" onclick="rescan('${escA(f.name)}')">Rescan</button>
-              <button class="btn red" onclick="removeFolder('${escA(f.path)}')">Remove</button>
-            </div>
-          </div>
-        `).join('');
-      } else {
-        fl.innerHTML = '<div class="empty">No folders synced yet. Click "Add Folder" to start.</div>';
-      }
-
-      // Devices
-      const dl = document.getElementById('devices-list');
-      if (s.discoveredDevices && s.discoveredDevices.length > 0) {
-        dl.innerHTML = s.discoveredDevices.map(d => `
-          <div class="row"><span class="label">${esc(d.hostname)} (${d.role})</span><span class="value">${d.ip}:${d.port}</span></div>
-        `).join('');
-      } else {
-        dl.innerHTML = '<div class="empty">No other CarbonSync devices on network</div>';
-      }
-
-      document.getElementById('api-key-display').textContent = s.apiKey || '';
-    }
-
-    function addActivity(item) {
-      activityLog.unshift(item);
-      if (activityLog.length > MAX_ACTIVITY) activityLog.pop();
-      renderActivity();
-    }
-
-    function renderActivity() {
-      const el = document.getElementById('activity-feed');
-      if (activityLog.length === 0) {
-        el.innerHTML = '<div class="empty">Waiting for activity...</div>';
-        return;
-      }
-      el.innerHTML = activityLog.map(a => {
-        const cls = a.type === 'client-connected' ? 'connect' :
-                    a.type === 'client-disconnected' ? 'disconnect' :
-                    a.type === 'file-changes' ? 'change' : '';
-        const time = new Date(a.time).toLocaleTimeString();
-        let msg = '';
-        if (a.type === 'client-connected') msg = `${a.deviceName || 'Client'} connected`;
-        else if (a.type === 'client-disconnected') msg = `${a.deviceName || 'Client'} disconnected`;
-        else if (a.type === 'file-changes') msg = `${a.count} file(s) changed in ${a.folder}`;
-        else if (a.type === 'scan') msg = a.message;
-        else msg = JSON.stringify(a);
-        return `<div class="activity-item ${cls}"><span class="activity-time">${time}</span><span class="activity-msg">${esc(msg)}</span></div>`;
-      }).join('');
-    }
-
-    // Events
-    document.getElementById('btn-add').addEventListener('click', async () => {
-      const p = await api.pickFolder();
-      if (p) { await api.addFolder(p); refresh(); addActivity({ type: 'scan', message: `Added folder: ${p}`, time: Date.now() }); }
-    });
-
-    document.getElementById('btn-show-key').addEventListener('click', () => {
-      const el = document.getElementById('api-key-display');
-      el.style.display = el.style.display === 'none' ? 'block' : 'none';
-    });
-
-    async function rescan(name) {
-      addActivity({ type: 'scan', message: `Rescanning ${name}...`, time: Date.now() });
-      await api.rescan(name);
-      setTimeout(refresh, 2000);
-    }
-
-    async function removeFolder(p) { await api.removeFolder(p); refresh(); }
-
-    // Live events
-    api.onStatusUpdate(refresh);
-    api.onProgress((p) => {
-      const el = document.getElementById('scan-progress');
-      if (p.phase === 'scanning') {
-        el.textContent = `Scanning: ${p.current}/${p.total} — ${p.file || ''}`;
-      }
-    });
-    api.onActivity((a) => {
-      addActivity(a);
-      // Update badge color based on activity
-      const badge = document.getElementById('status-badge');
-      if (a.type === 'file-changes') {
-        badge.className = 'badge blue';
-        setTimeout(() => { badge.className = 'badge green'; }, 3000);
-      }
-    });
-
-    function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
-    function escA(s) { return String(s).replace(/'/g, "\\'").replace(/\\/g, '\\\\'); }
-    function fmt(b) {
-      if (!b) return '0 B';
-      const k = 1024; const s = ['B','KB','MB','GB','TB'];
-      const i = Math.floor(Math.log(b) / Math.log(k));
-      return (b / Math.pow(k, i)).toFixed(1) + ' ' + s[i];
-    }
-
-    refresh();
-    setInterval(refresh, 10000);
-  </script>
+  <script src="app.js"></script>
 </body>
 </html>
