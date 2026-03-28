@@ -9,15 +9,16 @@ const fsp = require('fs/promises');
 const path = require('path');
 const crypto = require('crypto');
 const Database = require('better-sqlite3');
+const { SyncIgnore } = require('./syncignore');
 
 class Scanner {
   constructor(folderPath, dbPath, opts = {}) {
     this.folderPath = path.resolve(folderPath);
     this.db = new Database(dbPath);
-    this.ignorePatterns = opts.ignorePatterns || [];
+    this.syncIgnore = new SyncIgnore(this.folderPath, opts.ignorePatterns || []);
     this.onProgress = opts.onProgress || (() => {});
     this._scanning = false;
-    this._stale = false; // True if scan was incomplete
+    this._stale = false;
 
     this._initDB();
   }
@@ -35,6 +36,10 @@ class Scanner {
         scanned_at INTEGER NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_files_hash ON files(hash);
+      CREATE TABLE IF NOT EXISTS dirs (
+        path TEXT PRIMARY KEY,
+        scanned_at INTEGER NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS meta (
         key TEXT PRIMARY KEY,
         value TEXT
@@ -54,6 +59,9 @@ class Scanner {
     this._stmtPurgeOld = this.db.prepare('DELETE FROM files WHERE scanned_at < ?');
     this._stmtSetMeta = this.db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)');
     this._stmtGetMeta = this.db.prepare('SELECT value FROM meta WHERE key = ?');
+    this._stmtUpsertDir = this.db.prepare('INSERT OR REPLACE INTO dirs (path, scanned_at) VALUES (?, ?)');
+    this._stmtAllDirs = this.db.prepare('SELECT path FROM dirs ORDER BY path');
+    this._stmtPurgeDirs = this.db.prepare('DELETE FROM dirs WHERE scanned_at < ?');
   }
 
   /**
@@ -120,7 +128,16 @@ class Scanner {
       });
       batchWrite(updates);
 
-      // Phase 3: Purge deleted files
+      // Phase 3: Persist directories (for empty dir sync)
+      if (this._dirs) {
+        const dirBatch = this.db.transaction((dirList) => {
+          for (const d of dirList) this._stmtUpsertDir.run(d, scanId);
+        });
+        dirBatch(this._dirs);
+        this._stmtPurgeDirs.run(scanId);
+      }
+
+      // Phase 4: Purge deleted files
       const purged = this._stmtPurgeOld.run(scanId);
       stats.deleted = purged.changes;
 
@@ -214,7 +231,8 @@ class Scanner {
   }
 
   async _walkDir(dir) {
-    const results = [];
+    const files = [];
+    const dirs = [];
     const stack = [dir];
 
     while (stack.length > 0) {
@@ -227,8 +245,16 @@ class Scanner {
         continue;
       }
 
+      // Track this directory (for empty dir sync)
+      if (currentDir !== dir) {
+        const relDir = path.relative(this.folderPath, currentDir).replace(/\\/g, '/');
+        if (!this._shouldIgnore(relDir + '/')) {
+          dirs.push(relDir);
+        }
+      }
+
+      let hasFiles = false;
       for (const entry of entries) {
-        // Skip symlinks entirely (security + no infinite loops)
         if (entry.isSymbolicLink()) continue;
 
         const fullPath = path.join(currentDir, entry.name);
@@ -239,26 +265,38 @@ class Scanner {
         if (entry.isDirectory()) {
           stack.push(fullPath);
         } else if (entry.isFile()) {
+          hasFiles = true;
           try {
             const stat = await fsp.stat(fullPath);
-            results.push({ path: fullPath, size: stat.size, mtime: stat.mtimeMs });
+            files.push({ path: fullPath, size: stat.size, mtime: stat.mtimeMs });
           } catch { /* file deleted between readdir and stat */ }
         }
       }
     }
 
-    return results;
+    this._dirs = dirs;
+    return files;
+  }
+
+  /**
+   * Get all tracked directories (for syncing empty dirs).
+   */
+  getDirs() { return this._stmtAllDirs.all().map(r => r.path); }
+
+  /**
+   * Reload ignore patterns (call when .carbonsyncignore changes).
+   */
+  reloadIgnore() { this.syncIgnore.reload(); }
+
+  /**
+   * Find files with a given hash (for move/rename detection).
+   */
+  findByHash(hash) {
+    return this.db.prepare('SELECT * FROM files WHERE hash = ?').all(hash);
   }
 
   _shouldIgnore(relPath) {
-    if (relPath.startsWith('.carbonsync') || relPath.includes('/.carbonsync')) return true;
-    const name = path.basename(relPath);
-    if (name === 'Thumbs.db' || name === 'desktop.ini' || name === '.DS_Store') return true;
-    if (name.endsWith('.carbonsync.tmp') || name.endsWith('.partial')) return true;
-    for (const pattern of this.ignorePatterns) {
-      if (relPath.startsWith(pattern) || name === pattern) return true;
-    }
-    return false;
+    return this.syncIgnore.ignores(relPath);
   }
 }
 

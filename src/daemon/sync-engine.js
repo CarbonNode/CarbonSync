@@ -220,7 +220,10 @@ class SyncEngine extends EventEmitter {
 
   /**
    * Compare server index with client index and return diff.
-   * Returns { toDownload, toDelete } from client's perspective.
+   * Returns { toDownload, toDelete, toCopy, dirs } from client's perspective.
+   *
+   * toCopy = move/rename detection: if client has a file with the same hash
+   * at a different path, the client can copy locally instead of re-downloading.
    */
   computeDiff(folderName, clientIndex) {
     const folder = this.folders.get(folderName);
@@ -228,17 +231,34 @@ class SyncEngine extends EventEmitter {
 
     const serverIndex = folder.scanner.getIndexMap();
     const clientMap = new Map();
+    const clientHashMap = new Map(); // hash -> [paths] for move detection
+
     for (const entry of clientIndex) {
       clientMap.set(entry.path, entry);
+      if (!clientHashMap.has(entry.hash)) clientHashMap.set(entry.hash, []);
+      clientHashMap.get(entry.hash).push(entry.path);
     }
 
-    const toDownload = []; // Files client needs to download
-    const toDelete = [];   // Files client needs to delete
+    const toDownload = [];
+    const toCopy = [];  // { from, to, hash } — local copy on client (no network)
+    const toDelete = [];
 
-    // Files on server that client doesn't have or has old version
     for (const [relPath, serverEntry] of serverIndex) {
       const clientEntry = clientMap.get(relPath);
-      if (!clientEntry || clientEntry.hash !== serverEntry.hash) {
+      if (clientEntry && clientEntry.hash === serverEntry.hash) continue; // In sync
+
+      // File needs updating. Check if client has it at a different path (rename/move)
+      const existingPaths = clientHashMap.get(serverEntry.hash);
+      if (existingPaths && existingPaths.length > 0) {
+        // Client already has this content — just copy locally
+        toCopy.push({
+          from: existingPaths[0],
+          to: relPath,
+          hash: serverEntry.hash,
+          size: serverEntry.size,
+          mtime_ms: serverEntry.mtime_ms,
+        });
+      } else {
         toDownload.push({
           path: relPath,
           size: serverEntry.size,
@@ -248,14 +268,14 @@ class SyncEngine extends EventEmitter {
       }
     }
 
-    // Files on client that server doesn't have (deleted on server)
     for (const [relPath] of clientMap) {
-      if (!serverIndex.has(relPath)) {
-        toDelete.push(relPath);
-      }
+      if (!serverIndex.has(relPath)) toDelete.push(relPath);
     }
 
-    return { toDownload, toDelete };
+    // Include directory list for empty dir sync
+    const dirs = folder.scanner.getDirs();
+
+    return { toDownload, toCopy, toDelete, dirs };
   }
 
   /**

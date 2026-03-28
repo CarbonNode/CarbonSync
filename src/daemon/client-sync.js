@@ -170,14 +170,39 @@ class CarbonSyncClient extends EventEmitter {
     const diff = response.diff;
     if (!diff) return;
 
-    const { toDownload, toDelete } = diff;
+    const { toDownload = [], toCopy = [], toDelete = [], dirs = [] } = diff;
 
-    if (toDownload.length === 0 && toDelete.length === 0) {
+    if (toDownload.length === 0 && toCopy.length === 0 && toDelete.length === 0) {
       console.log(`${folderName}: in sync`);
       return;
     }
 
-    console.log(`${folderName}: ${toDownload.length} to download, ${toDelete.length} to delete`);
+    console.log(`${folderName}: ${toDownload.length} download, ${toCopy.length} copy, ${toDelete.length} delete`);
+
+    // Create empty directories first
+    for (const dir of dirs) {
+      const absDir = path.join(folder.path, dir);
+      try { await fsp.mkdir(absDir, { recursive: true }); } catch {}
+    }
+
+    // Apply local copies (rename/move detection — no network transfer needed!)
+    for (const copy of toCopy) {
+      try {
+        const fromAbs = path.join(folder.path, copy.from);
+        const toAbs = path.join(folder.path, copy.to);
+        await fsp.mkdir(path.dirname(toAbs), { recursive: true });
+        await fsp.copyFile(fromAbs, toAbs);
+        if (copy.mtime_ms) {
+          const mtime = new Date(copy.mtime_ms);
+          await fsp.utimes(toAbs, mtime, mtime);
+        }
+        await scanner.updateFile(toAbs);
+        console.log(`  Copied: ${copy.from} → ${copy.to}`);
+      } catch (err) {
+        console.warn(`  Copy failed [${copy.to}]: ${err.message}, will download instead`);
+        toDownload.push({ path: copy.to, size: copy.size, hash: copy.hash, mtime_ms: copy.mtime_ms });
+      }
+    }
 
     // Apply deletions
     for (const relPath of toDelete) {
