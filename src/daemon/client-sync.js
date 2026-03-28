@@ -1,8 +1,9 @@
 /**
  * CarbonSync Client — pulls files from the server.
  *
- * Connects to the hub, compares indexes, downloads changed files.
- * All writes are atomic (write to .tmp, verify hash, rename).
+ * Fixed: streaming downloads (no 64MB limit), concurrent transfers,
+ * hash verification before write, temp file cleanup, retry logic,
+ * resume on reconnect.
  */
 
 const fs = require('fs');
@@ -18,6 +19,9 @@ const { ensureFirewallRule } = require('./firewall');
 const { MSG, SYNC_STATE } = require('../shared/protocol');
 const os = require('os');
 
+const MAX_CONCURRENT_DOWNLOADS = 4;
+const MAX_RETRIES = 3;
+
 class CarbonSyncClient extends EventEmitter {
   constructor(configDir) {
     super();
@@ -25,10 +29,11 @@ class CarbonSyncClient extends EventEmitter {
     this.config = new Config(this.configDir);
     this.connection = null;
     this.discovery = null;
-    this.scanners = new Map(); // folder name -> Scanner
+    this.scanners = new Map();
     this.state = SYNC_STATE.IDLE;
     this._syncInProgress = false;
     this._serverInfo = null;
+    this._pendingSync = new Set(); // Folders that need syncing
   }
 
   async start() {
@@ -37,11 +42,9 @@ class CarbonSyncClient extends EventEmitter {
 
     await ensureFirewallRule(this.config.port);
 
-    // Start mDNS discovery to find the server
     this.discovery = new Discovery({
       port: this.config.port,
       role: 'client',
-      apiKey: this.config.apiKey,
       deviceId: this.config.deviceId,
       onFound: (service) => {
         if (service.role === 'server') {
@@ -64,14 +67,12 @@ class CarbonSyncClient extends EventEmitter {
   }
 
   async _connectToServer(serverInfo) {
-    if (this.connection && this.connection.connected) {
-      return; // Already connected
-    }
+    if (this.connection?.connected) return;
 
     this.connection = new SyncClient({
       host: serverInfo.ip,
       port: serverInfo.port,
-      apiKey: serverInfo.apiKey,
+      apiKey: this.config.apiKey || serverInfo.apiKey,
       deviceId: this.config.deviceId,
       deviceName: this.config.deviceName,
     });
@@ -79,15 +80,15 @@ class CarbonSyncClient extends EventEmitter {
     this.connection.on('authenticated', (msg) => {
       console.log(`Authenticated with server: ${msg.serverName}`);
       this.emit('connected', msg);
-      // Start syncing
       this._startSync();
     });
 
     this.connection.on('message', (msg) => {
       if (msg.type === MSG.NOTIFY) {
-        // Server pushed a change notification
-        console.log(`Change notification for ${msg.folder}: ${msg.changes.length} changes`);
-        this._syncFolder(msg.folder);
+        console.log(`Change notification: ${msg.folder} — ${msg.changes?.length || 0} changes`);
+        this._pendingSync.add(msg.folder);
+        // Debounce: wait 2s for more changes before syncing
+        setTimeout(() => this._processPendingSync(), 2000);
       }
     });
 
@@ -103,20 +104,22 @@ class CarbonSyncClient extends EventEmitter {
     this.connection.connect();
   }
 
-  /**
-   * Start syncing all folders with the server.
-   */
+  async _processPendingSync() {
+    if (this._syncInProgress) return;
+    const folders = [...this._pendingSync];
+    this._pendingSync.clear();
+    for (const folder of folders) {
+      await this._syncFolder(folder);
+    }
+  }
+
   async _startSync() {
     if (this._syncInProgress) return;
     this._syncInProgress = true;
 
     try {
-      // Request folder list from server (by requesting index of each known folder)
-      // For now, sync all folders configured on this client
       for (const folder of this.config.folders) {
-        if (folder.enabled) {
-          await this._syncFolder(folder.name);
-        }
+        if (folder.enabled) await this._syncFolder(folder.name);
       }
     } catch (err) {
       console.error(`Sync failed: ${err.message}`);
@@ -127,42 +130,40 @@ class CarbonSyncClient extends EventEmitter {
     }
   }
 
-  /**
-   * Sync a single folder with the server.
-   */
   async _syncFolder(folderName) {
-    if (!this.connection || !this.connection.authenticated) return;
+    if (!this.connection?.authenticated) return;
 
     const folder = this.config.folders.find(f => f.name === folderName);
-    if (!folder) {
-      console.warn(`Unknown folder: ${folderName}`);
-      return;
-    }
+    if (!folder) return;
 
     this.state = SYNC_STATE.COMPARING;
     this.emit('state', this.state);
 
-    // Ensure local scanner exists
+    // Ensure local scanner
     if (!this.scanners.has(folderName)) {
       const dbPath = path.join(this.configDir, `index_${folderName.replace(/[^a-zA-Z0-9]/g, '_')}.db`);
       this.scanners.set(folderName, new Scanner(folder.path, dbPath));
     }
 
     const scanner = this.scanners.get(folderName);
-
-    // Build local index
     await scanner.fullScan();
     const localIndex = scanner.getIndex();
 
-    // Send local index to server, get diff
-    const response = await this.connection.request({
-      type: MSG.INDEX_REQUEST,
-      folder: folderName,
-      clientIndex: localIndex.map(f => ({ path: f.path, hash: f.hash, size: f.size })),
-    }, 60000);
+    // Request diff from server
+    let response;
+    try {
+      response = await this.connection.request({
+        type: MSG.INDEX_REQUEST,
+        folder: folderName,
+        clientIndex: localIndex.map(f => ({ path: f.path, hash: f.hash, size: f.size })),
+      }, 60000);
+    } catch (err) {
+      console.error(`Index request failed: ${err.message}`);
+      return;
+    }
 
     if (response.type === MSG.ERROR) {
-      console.error(`Index request failed: ${response.message}`);
+      console.error(`Index error: ${response.message}`);
       return;
     }
 
@@ -172,136 +173,168 @@ class CarbonSyncClient extends EventEmitter {
     const { toDownload, toDelete } = diff;
 
     if (toDownload.length === 0 && toDelete.length === 0) {
-      console.log(`${folderName}: already in sync`);
+      console.log(`${folderName}: in sync`);
       return;
     }
 
     console.log(`${folderName}: ${toDownload.length} to download, ${toDelete.length} to delete`);
 
-    // ---- Apply deletions ----
+    // Apply deletions
     for (const relPath of toDelete) {
       const absPath = path.join(folder.path, relPath);
       try {
         await fsp.unlink(absPath);
         scanner.removeFile(absPath);
-        console.log(`  Deleted: ${relPath}`);
       } catch (err) {
-        if (err.code !== 'ENOENT') {
-          console.warn(`  Delete failed: ${relPath}: ${err.message}`);
-        }
+        if (err.code !== 'ENOENT') console.warn(`Delete failed [${relPath}]: ${err.message}`);
       }
     }
 
-    // ---- Download files ----
+    // Download files with concurrency limit
     this.state = SYNC_STATE.TRANSFERRING;
     this.emit('state', this.state);
 
-    let downloaded = 0;
-    const totalBytes = toDownload.reduce((sum, f) => sum + f.size, 0);
+    const totalBytes = toDownload.reduce((s, f) => s + f.size, 0);
     let transferredBytes = 0;
+    let filesComplete = 0;
+    let filesFailed = 0;
 
-    for (const file of toDownload) {
-      try {
-        await this._downloadFile(folder.path, folderName, file, (bytesReceived) => {
-          transferredBytes += bytesReceived;
+    // Process downloads in batches
+    const queue = [...toDownload];
+    const active = new Set();
+
+    const processNext = async () => {
+      while (queue.length > 0 && active.size < MAX_CONCURRENT_DOWNLOADS) {
+        const file = queue.shift();
+        const promise = this._downloadFileWithRetry(folder.path, folderName, file, scanner, (bytes) => {
+          transferredBytes += bytes;
           this.emit('progress', {
             folder: folderName,
             phase: 'transferring',
             currentFile: file.path,
-            fileProgress: Math.round((bytesReceived / file.size) * 100),
-            totalProgress: Math.round((transferredBytes / totalBytes) * 100),
-            filesComplete: downloaded,
+            filesComplete,
             filesTotal: toDownload.length,
+            filesFailed,
             bytesTransferred: transferredBytes,
             bytesTotal: totalBytes,
+            totalProgress: totalBytes > 0 ? Math.round((transferredBytes / totalBytes) * 100) : 0,
           });
+        }).then(() => {
+          filesComplete++;
+          active.delete(promise);
+          return processNext();
+        }).catch((err) => {
+          filesFailed++;
+          console.error(`  FAILED [${file.path}]: ${err.message}`);
+          active.delete(promise);
+          return processNext();
         });
 
-        downloaded++;
-        scanner.updateFile(path.join(folder.path, file.path));
-
-        // Confirm to server
-        this.connection.send({
-          type: MSG.FILE_DONE,
-          folder: folderName,
-          path: file.path,
-        });
-
-      } catch (err) {
-        console.error(`  Download failed: ${file.path}: ${err.message}`);
-        // Don't abort — continue with next file (Syncthing's "stuck file" problem solved)
+        active.add(promise);
       }
-    }
+
+      if (active.size > 0) {
+        await Promise.all(active);
+      }
+    };
+
+    await processNext();
 
     // Subscribe to live changes
-    this.connection.send({
-      type: MSG.SUBSCRIBE,
-      folder: folderName,
-    });
+    this.connection.send({ type: MSG.SUBSCRIBE, folder: folderName });
 
-    console.log(`${folderName}: sync complete — ${downloaded}/${toDownload.length} files, ${toDelete.length} deleted`);
+    console.log(`${folderName}: sync complete — ${filesComplete} downloaded, ${filesFailed} failed, ${toDelete.length} deleted`);
     this.state = SYNC_STATE.DONE;
     this.emit('state', this.state);
-    this.emit('sync-complete', { folder: folderName, downloaded, deleted: toDelete.length });
+    this.emit('sync-complete', { folder: folderName, downloaded: filesComplete, failed: filesFailed, deleted: toDelete.length });
   }
 
   /**
-   * Download a single file from the server. Atomic write with hash verification.
+   * Download with retry logic.
+   */
+  async _downloadFileWithRetry(folderPath, folderName, fileInfo, scanner, onProgress) {
+    let lastErr;
+    for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        await this._downloadFile(folderPath, folderName, fileInfo, onProgress);
+        await scanner.updateFile(path.join(folderPath, fileInfo.path));
+        this.connection.send({ type: MSG.FILE_DONE, folder: folderName, path: fileInfo.path });
+        return;
+      } catch (err) {
+        lastErr = err;
+        if (attempt < MAX_RETRIES) {
+          console.warn(`  Retry ${attempt}/${MAX_RETRIES} [${fileInfo.path}]: ${err.message}`);
+          await new Promise(r => setTimeout(r, 1000 * attempt));
+        }
+      }
+    }
+    throw lastErr;
+  }
+
+  /**
+   * Download a file using streaming protocol. Atomic write with hash verification.
    */
   async _downloadFile(folderPath, folderName, fileInfo, onProgress) {
     const absPath = path.join(folderPath, fileInfo.path);
     const tmpPath = absPath + '.carbonsync.tmp';
 
-    // Ensure parent directory exists
     await fsp.mkdir(path.dirname(absPath), { recursive: true });
 
-    // Request file from server
-    const response = await this.connection.request({
-      type: MSG.BLOCK_REQUEST,
-      folder: folderName,
-      path: fileInfo.path,
-    }, 120000); // 2 min timeout for large files
+    try {
+      // Request file from server
+      const response = await this.connection.request({
+        type: MSG.BLOCK_REQUEST,
+        folder: folderName,
+        path: fileInfo.path,
+      }, 300000); // 5 min timeout for very large files
 
-    if (response.type === MSG.ERROR) {
-      throw new Error(response.message);
+      if (response.type === MSG.ERROR) throw new Error(response.message);
+
+      let fileData;
+
+      if (response.streaming || response.binaryPromise) {
+        // Large file: collect streamed chunks
+        const chunks = await response.binaryPromise;
+        fileData = Buffer.concat(chunks);
+      } else {
+        // Small file: single binary frame follows
+        fileData = await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error('Binary data timeout')), 120000);
+          this.connection.once('binary', (data) => { clearTimeout(timeout); resolve(data); });
+        });
+      }
+
+      // Verify hash BEFORE writing to disk
+      const hash = crypto.createHash('sha256').update(fileData).digest('hex');
+      if (hash !== fileInfo.hash) {
+        throw new Error(`Hash mismatch: expected ${fileInfo.hash.substring(0, 12)}..., got ${hash.substring(0, 12)}...`);
+      }
+
+      // Atomic write: tmp → verify → rename
+      await fsp.writeFile(tmpPath, fileData);
+
+      // Set mtime to match server
+      if (fileInfo.mtime_ms) {
+        const mtime = new Date(fileInfo.mtime_ms);
+        await fsp.utimes(tmpPath, mtime, mtime);
+      }
+
+      await fsp.rename(tmpPath, absPath);
+
+      if (onProgress) onProgress(fileData.length);
+
+    } catch (err) {
+      // Always clean up temp file on failure
+      try { await fsp.unlink(tmpPath); } catch { /* doesn't exist */ }
+      throw err;
     }
-
-    // Wait for binary data
-    const data = await new Promise((resolve, reject) => {
-      const timeout = setTimeout(() => reject(new Error('Binary data timeout')), 120000);
-      this.connection.once('binary', (binaryData) => {
-        clearTimeout(timeout);
-        resolve(binaryData);
-      });
-    });
-
-    // Verify hash before writing
-    const hash = crypto.createHash('sha256').update(data).digest('hex');
-    if (hash !== fileInfo.hash) {
-      throw new Error(`Hash mismatch for ${fileInfo.path}: expected ${fileInfo.hash}, got ${hash}`);
-    }
-
-    // Atomic write: tmp → rename
-    await fsp.writeFile(tmpPath, data);
-
-    // Set mtime to match server
-    if (fileInfo.mtime_ms) {
-      const mtime = new Date(fileInfo.mtime_ms);
-      await fsp.utimes(tmpPath, mtime, mtime);
-    }
-
-    // Atomic rename
-    await fsp.rename(tmpPath, absPath);
-
-    if (onProgress) onProgress(data.length);
   }
 
   // ---- Management ----
 
   addFolder(folderPath, name) {
     this.config.addFolder(folderPath, name);
-    // Trigger sync if connected
-    if (this.connection && this.connection.authenticated) {
+    if (this.connection?.authenticated) {
       this._syncFolder(name || path.basename(folderPath));
     }
   }
@@ -329,9 +362,7 @@ class CarbonSyncClient extends EventEmitter {
   async stop() {
     if (this.discovery) this.discovery.stop();
     if (this.connection) this.connection.disconnect();
-    for (const [name, scanner] of this.scanners) {
-      scanner.close();
-    }
+    for (const [, scanner] of this.scanners) scanner.close();
     this.scanners.clear();
     console.log('CarbonSync client stopped');
   }

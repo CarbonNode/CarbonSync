@@ -6,7 +6,8 @@
  */
 
 const PROTOCOL_VERSION = 1;
-const MAX_FRAME_SIZE = 64 * 1024 * 1024; // 64MB max frame (for block transfers)
+const MAX_FRAME_SIZE = 16 * 1024 * 1024; // 16MB max JSON frame (index pages)
+// Binary data frames are 512KB each (streamed, not limited by MAX_FRAME_SIZE)
 const DEFAULT_PORT = 21547; // CarbonSync default port
 const SERVICE_TYPE = 'carbonsync';
 const CHUNK_SIZE_TARGET = 65536;  // 64KB target chunk size

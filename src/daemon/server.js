@@ -1,15 +1,8 @@
 /**
  * CarbonSync Server Daemon
  *
- * The main entry point for the server (hub) side. Ties together:
- * - Config management
- * - File scanning and indexing
- * - File watching for live changes
- * - Network transport (serving files to clients)
- * - mDNS discovery
- * - Firewall rule management
- *
- * This is the authoritative source. Clients pull from here. Server always wins.
+ * Fixed: streaming file transfers (no OOM), stale index protection,
+ * paginated index for large folders, concurrent download support.
  */
 
 const path = require('path');
@@ -17,10 +10,12 @@ const os = require('os');
 const { EventEmitter } = require('events');
 const { Config } = require('./config');
 const { SyncEngine } = require('./sync-engine');
-const { SyncServer, writeFrame } = require('./transport');
+const { SyncServer, writeFrame, streamFileToSocket } = require('./transport');
 const { Discovery } = require('./discovery');
 const { ensureFirewallRule } = require('./firewall');
 const { MSG, SYNC_STATE } = require('../shared/protocol');
+
+const INDEX_PAGE_SIZE = 5000; // Send index in pages of 5000 files
 
 class CarbonSyncServer extends EventEmitter {
   constructor(configDir) {
@@ -40,32 +35,23 @@ class CarbonSyncServer extends EventEmitter {
     console.log(`Config: ${this.configDir}`);
     console.log(`Folders: ${this.config.folders.length}`);
 
-    // 1. Ensure firewall rule
     await ensureFirewallRule(this.config.port);
 
-    // 2. Start sync engine (scanner + watcher)
+    // Sync engine
     this.engine = new SyncEngine({
       configDir: this.configDir,
       folders: this.config.folders.filter(f => f.enabled),
     });
 
-    this.engine.on('scan-progress', (progress) => {
-      this.emit('progress', progress);
-    });
+    this.engine.on('scan-progress', (p) => this.emit('progress', p));
 
     this.engine.on('changes', ({ folder, changes }) => {
       console.log(`Changes in ${folder}: ${changes.length} file(s)`);
-      // Push notifications to connected clients
       if (this.transport) {
         this.transport.broadcast({
           type: MSG.NOTIFY,
           folder,
-          changes: changes.map(c => ({
-            type: c.type,
-            path: c.path,
-            size: c.size,
-            hash: c.hash,
-          })),
+          changes: changes.map(c => ({ type: c.type, path: c.path, size: c.size, hash: c.hash })),
         });
       }
       this.emit('changes', { folder, changes });
@@ -73,39 +59,34 @@ class CarbonSyncServer extends EventEmitter {
 
     await this.engine.start();
 
-    // 3. Start network transport
+    // Network transport
     this.transport = new SyncServer({
       port: this.config.port,
-      configDir: this.configDir,
       apiKey: this.config.apiKey,
     });
 
-    this.transport.on('client-connected', (client) => {
-      console.log(`Client connected: ${client.deviceName}`);
-      this.emit('client-connected', { deviceName: client.deviceName, deviceId: client.deviceId });
+    this.transport.on('client-connected', (c) => {
+      console.log(`Client connected: ${c.deviceName}`);
+      this.emit('client-connected', { deviceName: c.deviceName, deviceId: c.deviceId });
     });
-
-    this.transport.on('client-disconnected', (client) => {
-      console.log(`Client disconnected: ${client.deviceName || 'unknown'}`);
-      this.emit('client-disconnected', { deviceName: client.deviceName });
+    this.transport.on('client-disconnected', (c) => {
+      console.log(`Client disconnected: ${c.deviceName || 'unknown'}`);
+      this.emit('client-disconnected', { deviceName: c.deviceName });
     });
-
-    this.transport.on('message', (client, msg) => {
-      this._handleClientMessage(client, msg);
-    });
+    this.transport.on('message', (client, msg) => this._handleClientMessage(client, msg));
 
     this.transport.start();
 
-    // 4. Start mDNS discovery
+    // Discovery (don't advertise API key — clients get it during pairing)
     this.discovery = new Discovery({
       port: this.config.port,
       role: 'server',
-      apiKey: this.config.apiKey,
       deviceId: this.config.deviceId,
+      // apiKey intentionally NOT advertised for security
     });
     this.discovery.publish();
 
-    // 5. Periodic rescan
+    // Periodic rescan (watcher handles most changes, this catches edge cases)
     const intervalMs = (this.config.settings.scanIntervalMinutes || 5) * 60 * 1000;
     this._scanInterval = setInterval(async () => {
       for (const name of this.engine.getFolderNames()) {
@@ -117,55 +98,50 @@ class CarbonSyncServer extends EventEmitter {
     this.emit('ready');
   }
 
-  /**
-   * Handle messages from authenticated clients.
-   */
   async _handleClientMessage(client, msg) {
     try {
       switch (msg.type) {
         case MSG.INDEX_REQUEST:
           this._handleIndexRequest(client, msg);
           break;
-
         case MSG.BLOCK_REQUEST:
           await this._handleBlockRequest(client, msg);
           break;
-
         case MSG.SUBSCRIBE:
           client.subscriptions.add(msg.folder);
           break;
-
         case MSG.FILE_DONE:
-          // Client confirms file received — log it
           console.log(`Client ${client.deviceName} synced: ${msg.folder}/${msg.path}`);
           break;
-
         case MSG.PING:
           writeFrame(client.socket, { type: MSG.PONG, _requestId: msg._requestId });
           break;
-
         default:
-          writeFrame(client.socket, {
-            type: MSG.ERROR,
-            message: `Unknown message type: ${msg.type}`,
-            _requestId: msg._requestId,
-          });
+          writeFrame(client.socket, { type: MSG.ERROR, message: 'Unknown message type', _requestId: msg._requestId });
       }
     } catch (err) {
       console.error(`Error handling message from ${client.deviceName}: ${err.message}`);
-      writeFrame(client.socket, {
-        type: MSG.ERROR,
-        message: err.message,
-        _requestId: msg._requestId,
-      });
+      writeFrame(client.socket, { type: MSG.ERROR, message: 'Server error', _requestId: msg._requestId });
     }
   }
 
   _handleIndexRequest(client, msg) {
     const folderName = msg.folder;
+    const folder = this.engine.folders.get(folderName);
+
+    if (!folder) {
+      writeFrame(client.socket, { type: MSG.ERROR, message: `Unknown folder: ${folderName}`, _requestId: msg._requestId });
+      return;
+    }
+
+    // Don't serve stale index
+    if (folder.scanner.isStale()) {
+      writeFrame(client.socket, { type: MSG.ERROR, message: 'Index is stale, rescan in progress', _requestId: msg._requestId });
+      return;
+    }
 
     if (msg.clientIndex) {
-      // Client sent their index — compute diff
+      // Diff mode
       const diff = this.engine.computeDiff(folderName, msg.clientIndex);
       writeFrame(client.socket, {
         type: MSG.INDEX_RESPONSE,
@@ -174,53 +150,95 @@ class CarbonSyncServer extends EventEmitter {
         diff,
         _requestId: msg._requestId,
       });
-    } else {
-      // Client wants full index
-      const index = this.engine.getIndex(folderName);
-      const info = this.engine.getFolderInfo(folderName);
+    } else if (msg.page !== undefined) {
+      // Paginated mode for large indexes
+      const page = folder.scanner.getIndexPage(msg.page * INDEX_PAGE_SIZE, INDEX_PAGE_SIZE);
+      const totalFiles = folder.scanner.getFileCount();
       writeFrame(client.socket, {
         type: MSG.INDEX_RESPONSE,
         folder: folderName,
-        rootHash: info?.rootHash || '',
-        index: index || [],
-        fileCount: index?.length || 0,
-        totalSize: info?.totalSize || 0,
+        page: msg.page,
+        pageSize: INDEX_PAGE_SIZE,
+        totalFiles,
+        totalPages: Math.ceil(totalFiles / INDEX_PAGE_SIZE),
+        index: page,
         _requestId: msg._requestId,
       });
+    } else {
+      // Full index — paginate if large
+      const totalFiles = folder.scanner.getFileCount();
+      if (totalFiles > INDEX_PAGE_SIZE) {
+        // Too large for one frame — tell client to use pagination
+        writeFrame(client.socket, {
+          type: MSG.INDEX_RESPONSE,
+          folder: folderName,
+          rootHash: this.engine.getRootHash(folderName),
+          totalFiles,
+          paginated: true,
+          totalPages: Math.ceil(totalFiles / INDEX_PAGE_SIZE),
+          _requestId: msg._requestId,
+        });
+      } else {
+        const index = this.engine.getIndex(folderName);
+        const info = this.engine.getFolderInfo(folderName);
+        writeFrame(client.socket, {
+          type: MSG.INDEX_RESPONSE,
+          folder: folderName,
+          rootHash: info?.rootHash || '',
+          index: index || [],
+          fileCount: index?.length || 0,
+          totalSize: info?.totalSize || 0,
+          _requestId: msg._requestId,
+        });
+      }
     }
   }
 
   async _handleBlockRequest(client, msg) {
-    const { folder, path: relPath, offset, length } = msg;
+    const { folder, path: relPath } = msg;
 
     try {
-      let data;
-      if (offset !== undefined && length !== undefined) {
-        // Chunk request
-        data = await this.engine.readFileChunk(folder, relPath, offset, length);
+      const folderObj = this.engine.folders.get(folder);
+      if (!folderObj) throw new Error(`Unknown folder: ${folder}`);
+
+      const absPath = path.join(folderObj.path, relPath);
+      const resolved = path.resolve(absPath);
+      if (!resolved.startsWith(folderObj.path)) throw new Error('Path traversal');
+
+      const stat = await require('fs/promises').stat(resolved);
+
+      if (stat.size > 4 * 1024 * 1024) {
+        // Large file: stream in chunks (no OOM)
+        await streamFileToSocket(client.socket, resolved, {
+          folder, path: relPath,
+          size: stat.size,
+          _requestId: msg._requestId,
+        });
       } else {
-        // Full file request
-        data = await this.engine.readFile(folder, relPath);
+        // Small file: send in one frame
+        const data = await require('fs/promises').readFile(resolved);
+        writeFrame(client.socket, {
+          type: MSG.BLOCK_RESPONSE,
+          folder, path: relPath,
+          size: data.length,
+          _requestId: msg._requestId,
+        });
+        // Send binary data
+        const header = Buffer.alloc(5);
+        header.writeUInt32BE(data.length + 1);
+        header[4] = 0xFF;
+        client.socket.write(Buffer.concat([header, data]));
+        // Send transfer end
+        writeFrame(client.socket, {
+          type: 'transfer_end',
+          folder, path: relPath,
+          bytesSent: data.length,
+        });
       }
-
-      // Send metadata frame
-      writeFrame(client.socket, {
-        type: MSG.BLOCK_RESPONSE,
-        folder,
-        path: relPath,
-        offset: offset || 0,
-        length: data.length,
-        _requestId: msg._requestId,
-      });
-
-      // Send binary data frame
-      const { writeBinaryFrame } = require('./transport');
-      writeBinaryFrame(client.socket, data);
-
     } catch (err) {
       writeFrame(client.socket, {
         type: MSG.ERROR,
-        message: `Failed to read ${relPath}: ${err.message}`,
+        message: `Read failed: ${err.message}`,
         _requestId: msg._requestId,
       });
     }
@@ -244,8 +262,6 @@ class CarbonSyncServer extends EventEmitter {
     };
   }
 
-  // ---- Folder management (live) ----
-
   async addFolder(folderPath, name) {
     this.config.addFolder(folderPath, name);
     const folder = this.config.folders.find(f => f.path === path.resolve(folderPath));
@@ -264,13 +280,8 @@ class CarbonSyncServer extends EventEmitter {
     }
   }
 
-  // ---- Shutdown ----
-
   async stop() {
-    if (this._scanInterval) {
-      clearInterval(this._scanInterval);
-      this._scanInterval = null;
-    }
+    if (this._scanInterval) { clearInterval(this._scanInterval); this._scanInterval = null; }
     if (this.discovery) this.discovery.stop();
     if (this.transport) this.transport.stop();
     if (this.engine) await this.engine.stop();
