@@ -17,6 +17,7 @@ const { Config } = require('./config');
 const { Discovery } = require('./discovery');
 const { ensureFirewallRule } = require('./firewall');
 const { MSG, SYNC_STATE } = require('../shared/protocol');
+const { ResumeState } = require('./resume');
 const os = require('os');
 
 const MAX_CONCURRENT_DOWNLOADS = 4;
@@ -33,7 +34,8 @@ class CarbonSyncClient extends EventEmitter {
     this.state = SYNC_STATE.IDLE;
     this._syncInProgress = false;
     this._serverInfo = null;
-    this._pendingSync = new Set(); // Folders that need syncing
+    this._pendingSync = new Set();
+    this.resumeState = new ResumeState(this.configDir);
   }
 
   async start() {
@@ -177,7 +179,19 @@ class CarbonSyncClient extends EventEmitter {
       return;
     }
 
-    console.log(`${folderName}: ${toDownload.length} download, ${toCopy.length} copy, ${toDelete.length} delete`);
+    // Resume: filter out already-downloaded files from a previous interrupted sync
+    const serverRootHash = response.rootHash || '';
+    const filteredDownload = this.resumeState.filterCompleted(folderName, serverRootHash, toDownload);
+
+    if (filteredDownload.length !== toDownload.length) {
+      console.log(`${folderName}: resuming — ${toDownload.length - filteredDownload.length} already done`);
+    }
+
+    console.log(`${folderName}: ${filteredDownload.length} download, ${toCopy.length} copy, ${toDelete.length} delete`);
+
+    // Start resume tracking
+    const totalBytes = filteredDownload.reduce((s, f) => s + f.size, 0);
+    this.resumeState.start(folderName, serverRootHash, filteredDownload.length, totalBytes);
 
     // Create empty directories first
     for (const dir of dirs) {
@@ -219,13 +233,11 @@ class CarbonSyncClient extends EventEmitter {
     this.state = SYNC_STATE.TRANSFERRING;
     this.emit('state', this.state);
 
-    const totalBytes = toDownload.reduce((s, f) => s + f.size, 0);
     let transferredBytes = 0;
     let filesComplete = 0;
     let filesFailed = 0;
 
-    // Process downloads in batches
-    const queue = [...toDownload];
+    const queue = [...filteredDownload];
     const active = new Set();
 
     const processNext = async () => {
@@ -246,6 +258,7 @@ class CarbonSyncClient extends EventEmitter {
           });
         }).then(() => {
           filesComplete++;
+          this.resumeState.markCompleted(folderName, file.path);
           active.delete(promise);
           return processNext();
         }).catch((err) => {
@@ -267,6 +280,9 @@ class CarbonSyncClient extends EventEmitter {
 
     // Subscribe to live changes
     this.connection.send({ type: MSG.SUBSCRIBE, folder: folderName });
+
+    // Clear resume state on successful completion
+    this.resumeState.clear(folderName);
 
     console.log(`${folderName}: sync complete — ${filesComplete} downloaded, ${filesFailed} failed, ${toDelete.length} deleted`);
     this.state = SYNC_STATE.DONE;

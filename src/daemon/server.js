@@ -13,6 +13,7 @@ const { SyncEngine } = require('./sync-engine');
 const { SyncServer, writeFrame, streamFileToSocket } = require('./transport');
 const { Discovery } = require('./discovery');
 const { ensureFirewallRule } = require('./firewall');
+const { ensureCerts } = require('./tls-certs');
 const { MSG, SYNC_STATE } = require('../shared/protocol');
 
 const INDEX_PAGE_SIZE = 5000; // Send index in pages of 5000 files
@@ -59,10 +60,16 @@ class CarbonSyncServer extends EventEmitter {
 
     await this.engine.start();
 
-    // Network transport
+    // TLS certificates
+    const certs = ensureCerts(this.configDir);
+    this.fingerprint = certs.fingerprint;
+
+    // Network transport (TLS if certs available)
     this.transport = new SyncServer({
       port: this.config.port,
       apiKey: this.config.apiKey,
+      tlsKey: certs.key,
+      tlsCert: certs.cert,
     });
 
     this.transport.on('client-connected', (c) => {
@@ -256,6 +263,8 @@ class CarbonSyncServer extends EventEmitter {
       deviceId: this.config.deviceId,
       port: this.config.port,
       apiKey: this.config.apiKey,
+      fingerprint: this.fingerprint || '',
+      tlsEnabled: !!this.transport?.tlsKey,
       connectedClients: this.transport?.getClientCount() || 0,
       folders,
       discoveredDevices: this.discovery?.getServices() || [],

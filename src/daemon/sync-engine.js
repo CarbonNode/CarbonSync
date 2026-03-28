@@ -90,21 +90,8 @@ class SyncEngine extends EventEmitter {
       const stats = await folder.scanner.fullScan();
       console.log(`Scan complete: ${name} — ${stats.added} added, ${stats.modified} modified, ${stats.deleted} deleted, ${stats.unchanged} unchanged, ${stats.errors} errors`);
 
-      // Start live watcher
-      try {
-        folder.watcher = watcher.subscribe(folder.path, (err, events) => {
-          if (err) {
-            console.error(`Watcher error for ${name}: ${err.message}`);
-            return;
-          }
-          this._handleWatchEvents(name, folder, events);
-        }, {
-          ignore: ['.carbonsync', '*.tmp', '*.partial', 'Thumbs.db', 'desktop.ini'],
-        });
-        console.log(`Watching folder: ${name}`);
-      } catch (err) {
-        console.error(`Failed to watch ${name}: ${err.message}`);
-      }
+      // Start live watcher with fallback to polling
+      await this._startWatcher(name, folder);
     }
 
     this.state = SYNC_STATE.IDLE;
@@ -115,6 +102,56 @@ class SyncEngine extends EventEmitter {
   /**
    * Handle file system events from @parcel/watcher.
    */
+  /**
+   * Start native file watcher. Falls back to polling on failure.
+   */
+  async _startWatcher(name, folder) {
+    try {
+      folder.watcher = watcher.subscribe(folder.path, (err, events) => {
+        if (err) {
+          console.error(`Watcher error for ${name}: ${err.message}`);
+          // Watcher died — fall back to polling
+          this._startPolling(name, folder);
+          return;
+        }
+        this._handleWatchEvents(name, folder, events);
+      }, {
+        ignore: ['.carbonsync', '*.tmp', '*.partial', 'Thumbs.db', 'desktop.ini'],
+      });
+      folder.watchMode = 'native';
+      console.log(`Watching folder: ${name} (native)`);
+    } catch (err) {
+      console.error(`Native watcher failed for ${name}: ${err.message}`);
+      this._startPolling(name, folder);
+    }
+  }
+
+  /**
+   * Fallback: poll for changes every 10 seconds.
+   */
+  _startPolling(name, folder) {
+    if (folder.pollInterval) return; // Already polling
+
+    console.warn(`Falling back to polling for ${name} (every 10s)`);
+    folder.watchMode = 'polling';
+    this.emit('watcher-fallback', { folder: name, reason: 'Native watcher failed' });
+
+    const oldHash = folder.scanner.getRootHash();
+
+    folder.pollInterval = setInterval(async () => {
+      try {
+        await folder.scanner.fullScan();
+        const newHash = folder.scanner.getRootHash();
+        if (newHash !== oldHash) {
+          // Something changed — emit generic change event
+          this.emit('changes', { folder: name, changes: [{ type: 'poll-rescan' }] });
+        }
+      } catch (err) {
+        console.error(`Poll scan error for ${name}: ${err.message}`);
+      }
+    }, 10000);
+  }
+
   _handleWatchEvents(folderName, folder, events) {
     const changes = [];
 
@@ -292,6 +329,10 @@ class SyncEngine extends EventEmitter {
    */
   async stop() {
     for (const [name, folder] of this.folders) {
+      if (folder.pollInterval) {
+        clearInterval(folder.pollInterval);
+        folder.pollInterval = null;
+      }
       if (folder.watcher) {
         try {
           const sub = await folder.watcher;

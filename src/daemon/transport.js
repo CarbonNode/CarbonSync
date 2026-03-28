@@ -6,6 +6,7 @@
  */
 
 const net = require('net');
+const tls = require('tls');
 const fs = require('fs');
 const crypto = require('crypto');
 const { EventEmitter } = require('events');
@@ -141,14 +142,16 @@ class SyncServer extends EventEmitter {
     super();
     this.port = opts.port;
     this.apiKey = opts.apiKey;
+    this.tlsKey = opts.tlsKey || null;   // PEM key buffer
+    this.tlsCert = opts.tlsCert || null;  // PEM cert buffer
     this.server = null;
     this.clients = new Map();
     this._nextId = 0;
-    this._rateLimits = new Map(); // clientId -> { lastIndexRequest: timestamp }
+    this._rateLimits = new Map();
   }
 
   start() {
-    this.server = net.createServer({ allowHalfOpen: true }, (socket) => {
+    const connectionHandler = (socket) => {
       const id = this._nextId++;
       const parser = new FrameParser();
       const client = {
@@ -186,10 +189,24 @@ class SyncServer extends EventEmitter {
         this.clients.delete(id);
         this._rateLimits.delete(id);
       });
-    });
+    };
+
+    // Use TLS if certs available, otherwise plain TCP
+    if (this.tlsKey && this.tlsCert) {
+      this.server = tls.createServer({
+        key: this.tlsKey,
+        cert: this.tlsCert,
+        allowHalfOpen: true,
+        rejectUnauthorized: false, // Self-signed; API key provides auth
+      }, connectionHandler);
+      console.log('TLS enabled');
+    } else {
+      this.server = net.createServer({ allowHalfOpen: true }, connectionHandler);
+      console.log('TLS not available — using TCP with API key auth');
+    }
 
     this.server.listen(this.port, '0.0.0.0', () => {
-      console.log(`CarbonSync server listening on port ${this.port}`);
+      console.log(`CarbonSync server listening on port ${this.port}${this.tlsKey ? ' (TLS)' : ''}`);
     });
 
     this.server.on('error', (err) => {
@@ -275,6 +292,7 @@ class SyncClient extends EventEmitter {
     this.apiKey = opts.apiKey;
     this.deviceId = opts.deviceId;
     this.deviceName = opts.deviceName;
+    this.useTls = opts.useTls !== false; // Default: try TLS
     this.socket = null;
     this.parser = null;
     this.connected = false;
@@ -282,19 +300,16 @@ class SyncClient extends EventEmitter {
     this._reconnectTimer = null;
     this._pendingRequests = new Map();
     this._requestId = 0;
-    this._binaryCollector = null; // For streaming file reception
+    this._binaryCollector = null;
   }
 
   connect() {
     if (this.socket) this.disconnect();
-
-    // Reset request ID counter on each new connection (prevents cross-connection races)
     this._requestId = 0;
 
-    this.socket = new net.Socket();
     this.parser = new FrameParser();
 
-    this.socket.connect(this.port, this.host, () => {
+    const onConnect = () => {
       this.connected = true;
       this.emit('connected');
       writeFrame(this.socket, {
@@ -304,7 +319,19 @@ class SyncClient extends EventEmitter {
         deviceName: this.deviceName,
         version: PROTOCOL_VERSION,
       });
-    });
+    };
+
+    // Try TLS first, fall back to plain TCP
+    if (this.useTls) {
+      this.socket = tls.connect({
+        host: this.host,
+        port: this.port,
+        rejectUnauthorized: false, // Self-signed; API key provides auth
+      }, onConnect);
+    } else {
+      this.socket = new net.Socket();
+      this.socket.connect(this.port, this.host, onConnect);
+    }
 
     this.socket.on('data', (data) => this.parser.feed(data));
 

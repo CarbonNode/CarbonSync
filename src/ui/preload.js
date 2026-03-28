@@ -10,6 +10,12 @@ contextBridge.exposeInMainWorld('carbonsync', {
   rescan: (name) => ipcRenderer.invoke('rescan', name),
 
   onStatusUpdate: (cb) => {
-    ipcRenderer.on('status-update', (_, status) => { try { cb(status); } catch {} });
+    ipcRenderer.on('status-update', (_, data) => { try { cb(data); } catch {} });
+  },
+  onProgress: (cb) => {
+    ipcRenderer.on('sync-progress', (_, data) => { try { cb(data); } catch {} });
+  },
+  onActivity: (cb) => {
+    ipcRenderer.on('activity', (_, data) => { try { cb(data); } catch {} });
   },
 });

@@ -17,6 +17,12 @@ let tray = null;
 let mainWindow = null;
 let server = null;
 
+function sendToUI(channel, data) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send(channel, data);
+  }
+}
+
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) { app.quit(); }
 
@@ -137,12 +143,22 @@ app.on('ready', async () => {
   server = new CarbonSyncServer(configDir);
 
   server.on('ready', () => updateTrayMenu());
-  server.on('client-connected', () => updateTrayMenu());
-  server.on('client-disconnected', () => updateTrayMenu());
-  server.on('changes', () => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('status-update', server.getStatus());
-    }
+  server.on('client-connected', (info) => {
+    updateTrayMenu();
+    sendToUI('activity', { type: 'client-connected', ...info, time: Date.now() });
+    sendToUI('status-update', server.getStatus());
+  });
+  server.on('client-disconnected', (info) => {
+    updateTrayMenu();
+    sendToUI('activity', { type: 'client-disconnected', ...info, time: Date.now() });
+    sendToUI('status-update', server.getStatus());
+  });
+  server.on('changes', ({ folder, changes }) => {
+    sendToUI('status-update', server.getStatus());
+    sendToUI('activity', { type: 'file-changes', folder, count: changes.length, time: Date.now() });
+  });
+  server.on('progress', (p) => {
+    sendToUI('sync-progress', p);
   });
 
   await server.start();
