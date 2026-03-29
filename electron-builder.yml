@@ -4,15 +4,17 @@ forceCodeSigning: false
 
 directories:
   output: dist
+  buildResources: build
 
 win:
   target:
     - portable
-  icon: assets/icon.ico
-  signAndEditExecutable: false
+  icon: build/icon.ico
+  signAndEditExecutable: true
 
 files:
   - src/**/*
+  - assets/**/*
   - package.json
 
 extraMetadata:

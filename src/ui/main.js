@@ -13,6 +13,7 @@ if (process.platform === 'win32') {
 }
 
 const configDir = path.join(os.homedir(), '.carbonsync');
+const iconPath = path.join(__dirname, '..', '..', 'assets', 'icon.ico');
 let tray = null;
 let mainWindow = null;
 let server = null;
@@ -31,6 +32,12 @@ app.on('second-instance', () => {
 });
 
 function createTrayIcon() {
+  try {
+    if (require('fs').existsSync(iconPath)) {
+      return nativeImage.createFromPath(iconPath);
+    }
+  } catch {}
+  // Fallback: generated green square
   const size = 16;
   const pixels = Buffer.alloc(size * size * 4);
   for (let i = 0; i < size * size; i++) {
@@ -53,6 +60,7 @@ function createWindow() {
     minWidth: 600, minHeight: 400,
     frame: true, show: true,
     title: 'CarbonSync',
+    icon: iconPath,
     backgroundColor: '#0a0a0f',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
