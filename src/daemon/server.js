@@ -255,8 +255,10 @@ class CarbonSyncServer extends EventEmitter {
 
   getStatus() {
     const folders = [];
-    for (const name of this.engine.getFolderNames()) {
-      folders.push(this.engine.getFolderInfo(name));
+    if (this.engine) {
+      for (const name of this.engine.getFolderNames()) {
+        folders.push(this.engine.getFolderInfo(name));
+      }
     }
     return {
       deviceName: this.config.deviceName,

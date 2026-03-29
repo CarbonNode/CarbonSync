@@ -42,10 +42,16 @@ function createTrayIcon() {
 }
 
 function createWindow() {
+  // Force window onto primary display (multi-monitor fix)
+  const { screen } = require('electron');
+  const primary = screen.getPrimaryDisplay();
+
   mainWindow = new BrowserWindow({
     width: 800, height: 520,
+    x: primary.bounds.x + Math.round((primary.bounds.width - 800) / 2),
+    y: primary.bounds.y + Math.round((primary.bounds.height - 520) / 2),
     minWidth: 600, minHeight: 400,
-    frame: true, show: false,
+    frame: true, show: true,
     title: 'CarbonSync',
     backgroundColor: '#0a0a0f',
     webPreferences: {
@@ -56,7 +62,17 @@ function createWindow() {
     },
   });
 
-  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
+  const htmlPath = path.join(__dirname, 'renderer', 'index.html');
+  console.log('Loading HTML from:', htmlPath);
+  mainWindow.loadFile(htmlPath);
+
+  mainWindow.webContents.on('did-fail-load', (e, code, desc) => {
+    console.error('Page load failed:', code, desc);
+  });
+
+  mainWindow.webContents.on('console-message', (e, level, msg) => {
+    console.log('Renderer:', msg);
+  });
 
   mainWindow.on('close', (e) => {
     if (!app.isQuitting) { e.preventDefault(); mainWindow.hide(); }
@@ -161,24 +177,39 @@ app.on('ready', async () => {
     sendToUI('sync-progress', p);
   });
 
-  await server.start();
+  console.log('UI: creating window...');
+  createWindow();
+  console.log('UI: window created');
+  setupIPC();
+  console.log('UI: IPC ready');
+
+  // Show window immediately
+  mainWindow.show();
+  mainWindow.focus();
+  console.log('UI: window shown');
 
   // Tray
   tray = new Tray(createTrayIcon());
   tray.setToolTip('CarbonSync');
   updateTrayMenu();
   tray.on('double-click', () => { mainWindow?.show(); mainWindow?.focus(); });
-
-  // Window
-  createWindow();
-  setupIPC();
-
-  // Auto-start with Windows
-  app.setLoginItemSettings({ openAtLogin: true, args: ['--hidden'] });
+  console.log('UI: tray created');
 
   if (!process.argv.includes('--hidden')) {
     mainWindow.show();
   }
+
+  // Auto-start with Windows
+  app.setLoginItemSettings({ openAtLogin: true, args: ['--hidden'] });
+
+  // Start server in background (may take a few seconds for firewall/scan)
+  server.start().then(() => {
+    updateTrayMenu();
+    sendToUI('status-update', server.getStatus());
+  }).catch(err => {
+    console.error('Server start failed:', err);
+    sendToUI('activity', { type: 'error', message: `Server failed: ${err.message}`, time: Date.now() });
+  });
 });
 
 app.on('before-quit', async () => {
