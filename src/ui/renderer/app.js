@@ -212,7 +212,37 @@ function setupSettings() {
     toast('Settings saved', 'success');
   });
 
-  // Load current settings
+  // Update check
+  document.getElementById('btn-check-update').addEventListener('click', async () => {
+    const btn = document.getElementById('btn-check-update');
+    const status = document.getElementById('update-status');
+    btn.disabled = true; btn.textContent = 'Checking...';
+    try {
+      const release = await api.checkUpdate();
+      if (release.error) {
+        status.innerHTML = `<span style="color:var(--red);">Error: ${esc(release.error)}</span>`;
+      } else if (release.hasUpdate) {
+        status.innerHTML = `<span style="color:var(--green);">v${esc(release.version)} available!</span> <button class="btn sm green" id="btn-do-update">Download & Install</button>`;
+        document.getElementById('btn-do-update').addEventListener('click', async () => {
+          status.innerHTML = '<span style="color:var(--accent);">Downloading...</span>';
+          const result = await api.downloadUpdate();
+          if (result.success) {
+            status.innerHTML = `<span style="color:var(--green);">Downloaded v${esc(result.version)} — opening folder...</span>`;
+            toast('Update downloaded! Close app and run the new exe.', 'success');
+          } else {
+            status.innerHTML = `<span style="color:var(--red);">${esc(result.message)}</span>`;
+          }
+        });
+      } else {
+        status.innerHTML = '<span style="color:var(--text-dim);">Up to date</span>';
+      }
+    } catch (err) {
+      status.innerHTML = `<span style="color:var(--red);">${esc(err.message)}</span>`;
+    }
+    btn.disabled = false; btn.textContent = 'Check for Updates';
+  });
+
+  // Load current settings + version
   api.getConfig().then(cfg => {
     const s = cfg.settings || {};
     document.getElementById('set-scan-interval').value = s.scanIntervalMinutes || 5;
@@ -220,6 +250,9 @@ function setupSettings() {
     document.getElementById('set-concurrent').value = s.maxConcurrentTransfers || 4;
     document.getElementById('set-port').value = cfg.port || 21547;
   });
+  api.checkUpdate().then(r => {
+    document.getElementById('current-version').textContent = r.current || '—';
+  }).catch(() => {});
 }
 
 // ---- Live Events ----

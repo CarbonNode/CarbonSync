@@ -8,6 +8,8 @@ contextBridge.exposeInMainWorld('carbonsync', {
   updateSettings: (s) => ipcRenderer.invoke('update-settings', s),
   pickFolder: () => ipcRenderer.invoke('pick-folder'),
   rescan: (name) => ipcRenderer.invoke('rescan', name),
+  checkUpdate: () => ipcRenderer.invoke('check-update'),
+  downloadUpdate: () => ipcRenderer.invoke('download-update'),
 
   onStatusUpdate: (cb) => {
     ipcRenderer.on('status-update', (_, data) => { try { cb(data); } catch {} });
