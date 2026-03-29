@@ -8,9 +8,13 @@ const path = require('path');
 const os = require('os');
 const { CarbonSyncServer } = require('../daemon/server');
 
+app.name = 'CarbonSync';
 if (process.platform === 'win32') {
   app.setAppUserModelId('com.carbonsync.app');
 }
+
+// Set userData to avoid sharing with other Electron apps
+app.setPath('userData', path.join(app.getPath('appData'), 'CarbonSync'));
 
 const configDir = path.join(os.homedir(), '.carbonsync');
 const iconPath = path.join(__dirname, '..', '..', 'assets', 'icon.ico');

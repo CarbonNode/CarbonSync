@@ -92,6 +92,7 @@ class CarbonSyncServer extends EventEmitter {
       // apiKey intentionally NOT advertised for security
     });
     this.discovery.publish();
+    this.discovery.browse();
 
     // Periodic rescan (watcher handles most changes, this catches edge cases)
     const intervalMs = (this.config.settings.scanIntervalMinutes || 5) * 60 * 1000;
