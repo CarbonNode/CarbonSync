@@ -26,19 +26,30 @@ class Discovery {
    * Advertise this device on the network.
    */
   publish() {
-    this.service = this.bonjour.publish({
-      name: `CarbonSync-${this.hostname}`,
-      type: SERVICE_TYPE,
-      port: this.port,
-      txt: {
-        role: this.role,
-        apiKey: this.apiKey,
-        deviceId: this.deviceId,
-        hostname: this.hostname,
-        version: '1',
-      },
-    });
-    console.log(`Discovery: advertising as ${this.role} on port ${this.port}`);
+    // Use deviceId suffix to avoid "name already in use" collisions on restart
+    const suffix = this.deviceId ? this.deviceId.slice(0, 8) : Date.now().toString(36);
+    const tryPublish = (name) => {
+      try {
+        this.service = this.bonjour.publish({
+          name,
+          type: SERVICE_TYPE,
+          port: this.port,
+          txt: {
+            role: this.role,
+            deviceId: this.deviceId,
+            hostname: this.hostname,
+            version: '1',
+          },
+        });
+        this.service.on('error', (err) => {
+          console.warn(`Discovery publish error: ${err.message}`);
+        });
+        console.log(`Discovery: advertising as ${this.role} on port ${this.port} (${name})`);
+      } catch (err) {
+        console.warn(`Discovery: failed to publish: ${err.message}`);
+      }
+    };
+    tryPublish(`CarbonSync-${this.hostname}-${suffix}`);
   }
 
   /**
@@ -52,13 +63,14 @@ class Discovery {
         role: service.txt?.role || 'unknown',
         ip: this._getIPv4(service),
         port: service.port,
-        apiKey: service.txt?.apiKey || '',
         deviceId: service.txt?.deviceId || '',
         hostname: service.txt?.hostname || service.name,
         name: service.name,
       };
 
       if (!info.ip) return;
+      // Skip self
+      if (info.deviceId && info.deviceId === this.deviceId) return;
 
       console.log(`Discovery: found ${info.role} at ${info.ip}:${info.port} (${info.hostname})`);
       this.services.set(info.hostname, info);
