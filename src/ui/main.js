@@ -156,6 +156,10 @@ function setupIPC() {
 
   ipcMain.handle('update-settings', (_, settings) => {
     server.config.updateSettings(settings);
+    // Apply start-with-Windows immediately if changed
+    if (settings.startWithWindows !== undefined) {
+      app.setLoginItemSettings({ openAtLogin: settings.startWithWindows, args: ['--hidden'] });
+    }
     return true;
   });
 
@@ -182,6 +186,17 @@ function setupIPC() {
 
   ipcMain.handle('window-minimize', () => mainWindow?.minimize());
   ipcMain.handle('window-close', () => mainWindow?.hide());
+
+  ipcMain.handle('approve-peer', (_, clientId, selectedFolders) => {
+    server.approvePeer(clientId, selectedFolders);
+    sendToUI('status-update', server.getStatus());
+    return true;
+  });
+
+  ipcMain.handle('reject-peer', (_, clientId) => {
+    server.rejectPeer(clientId);
+    return true;
+  });
 
   ipcMain.handle('set-hub-connection', (_, address, apiKey) => {
     server.config.setHubConnection(address, apiKey);
@@ -476,6 +491,15 @@ app.on('ready', async () => {
   server.on('sync-progress-update', () => {
     sendToUI('status-update', server.getStatus());
   });
+  server.on('sync-request', (request) => {
+    console.log(`Sync request from: ${request.deviceName} (${request.ip})`);
+    sendToUI('sync-request', request);
+    // Show window if hidden so user can approve
+    if (mainWindow && !mainWindow.isVisible()) {
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
 
   console.log('UI: creating window...');
   createWindow();
@@ -497,8 +521,9 @@ app.on('ready', async () => {
     // Stay hidden — tray only
   }
 
-  // Auto-start with Windows
-  app.setLoginItemSettings({ openAtLogin: true, args: ['--hidden'] });
+  // Auto-start with Windows (respect config, default: on)
+  const startWithWindows = server.config.data.settings?.startWithWindows !== false;
+  app.setLoginItemSettings({ openAtLogin: startWithWindows, args: ['--hidden'] });
 
   // Start server in background (may take a few seconds for firewall/scan)
   server.start().then(() => {

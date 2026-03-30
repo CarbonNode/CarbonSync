@@ -14,6 +14,8 @@ contextBridge.exposeInMainWorld('carbonsync', {
   getFolderExcludes: (folder) => ipcRenderer.invoke('get-folder-excludes', folder),
   addPeer: (ip, port) => ipcRenderer.invoke('add-peer', ip, port),
   removePeer: (ip, port) => ipcRenderer.invoke('remove-peer', ip, port),
+  approvePeer: (clientId, folders) => ipcRenderer.invoke('approve-peer', clientId, folders),
+  rejectPeer: (clientId) => ipcRenderer.invoke('reject-peer', clientId),
   setHubConnection: (addr, key) => ipcRenderer.invoke('set-hub-connection', addr, key),
   setFolderDirection: (folder, dir) => ipcRenderer.invoke('set-folder-direction', folder, dir),
   checkUpdate: () => ipcRenderer.invoke('check-update'),
@@ -57,5 +59,8 @@ contextBridge.exposeInMainWorld('carbonsync', {
 
   onActivity: (cb) => {
     ipcRenderer.on('activity', (_, data) => { try { cb(data); } catch {} });
+  },
+  onSyncRequest: (cb) => {
+    ipcRenderer.on('sync-request', (_, data) => { try { cb(data); } catch {} });
   },
 });

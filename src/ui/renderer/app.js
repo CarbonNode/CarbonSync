@@ -901,9 +901,19 @@ function setupGames() {
     });
   }
 
-  // Load game save settings
+  // Start with Windows toggle — saves immediately
+  const startWinEl = document.getElementById('set-start-windows');
+  if (startWinEl) {
+    startWinEl.addEventListener('change', async () => {
+      await api.updateSettings({ startWithWindows: startWinEl.checked });
+      toast(startWinEl.checked ? 'Will start with Windows' : 'Won\'t start with Windows', 'success');
+    });
+  }
+
+  // Load game save settings + system settings
   api.getConfig().then(cfg => {
     const s = cfg.settings || {};
+    if (startWinEl) startWinEl.checked = s.startWithWindows !== false;
     const el1 = document.getElementById('set-gamesave-enabled');
     const el2 = document.getElementById('set-gamesave-versions');
     const el3 = document.getElementById('set-gamesave-autorestore');

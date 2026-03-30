@@ -130,9 +130,34 @@ class CarbonSyncDevice extends EventEmitter {
 
     this.transport.on('client-connected', (c) => {
       console.log(`Client connected: ${c.deviceName}`);
-      this.emit('client-connected', { deviceName: c.deviceName, deviceId: c.deviceId });
-      // Send available folders
-      this._sendFolderList(c);
+
+      // Check if this is a known/approved peer
+      const savedPeers = this.config.data.savedPeers || [];
+      const approvedPeers = this.config.data.approvedPeers || [];
+      const remoteIp = c.socket.remoteAddress?.replace('::ffff:', '') || '';
+      const isKnown = savedPeers.some(p => p.ip === remoteIp) ||
+                       approvedPeers.some(p => p.deviceId === c.deviceId || p.deviceName === c.deviceName);
+
+      if (isKnown) {
+        // Auto-approve known peers
+        this.emit('client-connected', { deviceName: c.deviceName, deviceId: c.deviceId, ip: remoteIp, auto: true });
+        this._sendFolderList(c);
+      } else {
+        // New peer — emit sync request for UI to show approval popup
+        console.log(`New peer requesting sync: ${c.deviceName} (${remoteIp})`);
+        this.emit('sync-request', {
+          deviceName: c.deviceName,
+          deviceId: c.deviceId,
+          ip: remoteIp,
+          clientId: c.id,
+          folders: this.config.folders.filter(f => f.enabled).map(f => ({
+            name: f.name,
+            path: f.path,
+            direction: f.direction || 'both',
+            fileCount: this.engine?.folders.get(f.name)?.scanner.getFileCount() || 0,
+          })),
+        });
+      }
     });
 
     this.transport.on('client-disconnected', (c) => {
@@ -1131,6 +1156,49 @@ class CarbonSyncDevice extends EventEmitter {
         if (now - ts > RECENTLY_WRITTEN_TTL * 2) this._recentlyWritten.delete(k);
       }
     }
+  }
+
+  /**
+   * Approve a sync request from a new peer.
+   * Saves them as approved so future connections are auto-accepted.
+   */
+  approvePeer(clientId, selectedFolders) {
+    const client = this.transport?.clients.get(clientId);
+    if (!client) return false;
+
+    const remoteIp = client.socket.remoteAddress?.replace('::ffff:', '') || '';
+
+    // Save as approved peer
+    if (!this.config.data.approvedPeers) this.config.data.approvedPeers = [];
+    if (!this.config.data.approvedPeers.some(p => p.deviceId === client.deviceId)) {
+      this.config.data.approvedPeers.push({
+        deviceId: client.deviceId,
+        deviceName: client.deviceName,
+        ip: remoteIp,
+        approvedAt: Date.now(),
+        folders: selectedFolders || [],
+      });
+      this.config.save();
+    }
+
+    // Send folder list to the now-approved client
+    this._sendFolderList(client);
+    this.emit('client-connected', { deviceName: client.deviceName, deviceId: client.deviceId, ip: remoteIp });
+
+    console.log(`Approved peer: ${client.deviceName} (${remoteIp})`);
+    return true;
+  }
+
+  /**
+   * Reject a sync request — disconnect the client.
+   */
+  rejectPeer(clientId) {
+    const client = this.transport?.clients.get(clientId);
+    if (client) {
+      writeFrame(client.socket, { type: MSG.ERROR, message: 'Connection rejected' });
+      client.socket.destroy();
+    }
+    return true;
   }
 
   reconnectHub() {
