@@ -581,6 +581,7 @@ class GameSaveManager extends EventEmitter {
       gameName: displayName,
       saveBase: entry.saveBase,
       sourceDevice: os.hostname(),
+      force: true, // Manual backup always creates a version
     });
 
     if (result) {

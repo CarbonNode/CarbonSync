@@ -141,6 +141,56 @@ class GameBackup {
   }
 
   /**
+   * Quick check: has the content in current/ changed vs the latest backup?
+   * Compares total file count and sizes — fast, no hashing needed.
+   */
+  async _hasContentChanged(currentDir, backupsDir) {
+    try {
+      const entries = await fsp.readdir(backupsDir, { withFileTypes: true });
+      const dirs = entries.filter(e => e.isDirectory() && !e.name.startsWith('.')).map(e => e.name).sort();
+      if (dirs.length === 0) return true; // No previous backup — content is "new"
+
+      const latestDir = path.join(backupsDir, dirs[dirs.length - 1]);
+
+      // Get file sizes from current/ and latest backup
+      const currentFiles = await this._getFileSizes(currentDir);
+      const backupFiles = await this._getFileSizes(latestDir);
+
+      // Different number of files = changed
+      if (currentFiles.size !== backupFiles.size) return true;
+
+      // Different sizes for any file = changed
+      for (const [filePath, size] of currentFiles) {
+        if (backupFiles.get(filePath) !== size) return true;
+      }
+
+      return false; // Same files, same sizes
+    } catch {
+      return true; // Error = assume changed (safe side)
+    }
+  }
+
+  async _getFileSizes(dir, prefix = '') {
+    const result = new Map();
+    let entries;
+    try { entries = await fsp.readdir(dir, { withFileTypes: true }); } catch { return result; }
+    for (const entry of entries) {
+      if (entry.name === '_meta.json' || entry.name.startsWith('.')) continue;
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        const sub = await this._getFileSizes(path.join(dir, entry.name), rel);
+        for (const [k, v] of sub) result.set(k, v);
+      } else if (entry.isFile()) {
+        try {
+          const stat = await fsp.stat(path.join(dir, entry.name));
+          result.set(rel, stat.size);
+        } catch {}
+      }
+    }
+    return result;
+  }
+
+  /**
    * Recursively copy a directory to two destinations (current + backup).
    */
   async _copyDir(src, destCurrent, destBackup) {
