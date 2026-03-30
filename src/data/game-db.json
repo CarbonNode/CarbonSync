@@ -1,0 +1,473 @@
+{
+  "version": 1,
+  "games": [
+    {
+      "id": "minecraft-java",
+      "name": "Minecraft (Java)",
+      "savePaths": [{ "root": "appdata_roaming", "pattern": ".minecraft/saves" }],
+      "extensions": [".dat", ".dat_old", ".mca", ".nbt"],
+      "type": "directory"
+    },
+    {
+      "id": "minecraft-bedrock",
+      "name": "Minecraft (Bedrock)",
+      "savePaths": [{ "root": "appdata_local", "pattern": "Packages/Microsoft.MinecraftUWP_8wekyb3d8bbwe/LocalState/games/com.mojang/minecraftWorlds" }],
+      "extensions": [".dat", ".ldb", ".log"],
+      "type": "directory"
+    },
+    {
+      "id": "stardew-valley",
+      "name": "Stardew Valley",
+      "savePaths": [{ "root": "appdata_roaming", "pattern": "StardewValley/Saves" }],
+      "extensions": [".xml", ""],
+      "type": "directory"
+    },
+    {
+      "id": "terraria",
+      "name": "Terraria",
+      "savePaths": [{ "root": "documents", "pattern": "My Games/Terraria" }],
+      "extensions": [".wld", ".plr", ".bak"],
+      "type": "directory"
+    },
+    {
+      "id": "hollow-knight",
+      "name": "Hollow Knight",
+      "savePaths": [
+        { "root": "appdata_locallow", "pattern": "Team Cherry/Hollow Knight" }
+      ],
+      "extensions": [".dat"],
+      "type": "directory"
+    },
+    {
+      "id": "celeste",
+      "name": "Celeste",
+      "savePaths": [{ "root": "appdata_local", "pattern": "Celeste/Saves" }],
+      "extensions": [".celeste"],
+      "type": "directory"
+    },
+    {
+      "id": "dark-souls-3",
+      "name": "Dark Souls III",
+      "savePaths": [{ "root": "appdata_roaming", "pattern": "DarkSoulsIII" }],
+      "extensions": [".sl2"],
+      "type": "directory"
+    },
+    {
+      "id": "dark-souls-2",
+      "name": "Dark Souls II",
+      "savePaths": [{ "root": "appdata_roaming", "pattern": "DarkSoulsII" }],
+      "extensions": [".sl2"],
+      "type": "directory"
+    },
+    {
+      "id": "dark-souls-1",
+      "name": "Dark Souls: Remastered",
+      "savePaths": [{ "root": "documents", "pattern": "NBGI/DARK SOULS REMASTERED" }],
+      "extensions": [".sl2"],
+      "type": "directory"
+    },
+    {
+      "id": "elden-ring",
+      "name": "Elden Ring",
+      "savePaths": [{ "root": "appdata_roaming", "pattern": "EldenRing" }],
+      "extensions": [".sl2", ".co2"],
+      "type": "directory"
+    },
+    {
+      "id": "sekiro",
+      "name": "Sekiro: Shadows Die Twice",
+      "savePaths": [{ "root": "appdata_roaming", "pattern": "Sekiro" }],
+      "extensions": [".sl2"],
+      "type": "directory"
+    },
+    {
+      "id": "skyrim-se",
+      "name": "Skyrim Special Edition",
+      "savePaths": [{ "root": "documents", "pattern": "My Games/Skyrim Special Edition/Saves" }],
+      "extensions": [".ess", ".skse"],
+      "type": "directory"
+    },
+    {
+      "id": "skyrim",
+      "name": "Skyrim",
+      "savePaths": [{ "root": "documents", "pattern": "My Games/Skyrim/Saves" }],
+      "extensions": [".ess", ".skse"],
+      "type": "directory"
+    },
+    {
+      "id": "fallout-4",
+      "name": "Fallout 4",
+      "savePaths": [{ "root": "documents", "pattern": "My Games/Fallout4/Saves" }],
+      "extensions": [".fos"],
+      "type": "directory"
+    },
+    {
+      "id": "fallout-nv",
+      "name": "Fallout: New Vegas",
+      "savePaths": [{ "root": "documents", "pattern": "My Games/FalloutNV/Saves" }],
+      "extensions": [".fos"],
+      "type": "directory"
+    },
+    {
+      "id": "starfield",
+      "name": "Starfield",
+      "savePaths": [{ "root": "documents", "pattern": "My Games/Starfield/Saves" }],
+      "extensions": [".sfs"],
+      "type": "directory"
+    },
+    {
+      "id": "oblivion",
+      "name": "The Elder Scrolls IV: Oblivion",
+      "savePaths": [{ "root": "documents", "pattern": "My Games/Oblivion/Saves" }],
+      "extensions": [".ess"],
+      "type": "directory"
+    },
+    {
+      "id": "baldurs-gate-3",
+      "name": "Baldur's Gate 3",
+      "savePaths": [{ "root": "appdata_local", "pattern": "Larian Studios/Baldur's Gate 3/PlayerProfiles" }],
+      "extensions": [".lsv", ".lsf"],
+      "type": "directory"
+    },
+    {
+      "id": "divinity-os2",
+      "name": "Divinity: Original Sin 2",
+      "savePaths": [{ "root": "documents", "pattern": "Larian Studios/Divinity Original Sin 2/PlayerProfiles" }],
+      "extensions": [".lsv", ".lsf"],
+      "type": "directory"
+    },
+    {
+      "id": "hades",
+      "name": "Hades",
+      "savePaths": [{ "root": "documents", "pattern": "Saved Games/Hades" }],
+      "extensions": [".sav"],
+      "type": "directory"
+    },
+    {
+      "id": "hades-2",
+      "name": "Hades II",
+      "savePaths": [{ "root": "documents", "pattern": "Saved Games/Hades II" }],
+      "extensions": [".sav"],
+      "type": "directory"
+    },
+    {
+      "id": "slay-the-spire",
+      "name": "Slay the Spire",
+      "savePaths": [
+        { "root": "appdata_local", "pattern": "SlayTheSpire/preferences" },
+        { "root": "appdata_local", "pattern": "SlayTheSpire/saves" }
+      ],
+      "extensions": [".autosave", ".sav"],
+      "type": "directory"
+    },
+    {
+      "id": "balatro",
+      "name": "Balatro",
+      "savePaths": [
+        { "root": "appdata_roaming", "pattern": "Balatro" }
+      ],
+      "extensions": [".jkr"],
+      "type": "directory"
+    },
+    {
+      "id": "dead-cells",
+      "name": "Dead Cells",
+      "savePaths": [{ "root": "appdata_local", "pattern": "DeadCells" }],
+      "extensions": [".sav", ".dat"],
+      "type": "directory"
+    },
+    {
+      "id": "cuphead",
+      "name": "Cuphead",
+      "savePaths": [{ "root": "appdata_roaming", "pattern": "Cuphead" }],
+      "extensions": [".sav"],
+      "type": "directory"
+    },
+    {
+      "id": "factorio",
+      "name": "Factorio",
+      "savePaths": [{ "root": "appdata_roaming", "pattern": "Factorio/saves" }],
+      "extensions": [".zip"],
+      "type": "directory"
+    },
+    {
+      "id": "rimworld",
+      "name": "RimWorld",
+      "savePaths": [
+        { "root": "appdata_locallow", "pattern": "Ludeon Studios/RimWorld by Ludeon Studios/Saves" }
+      ],
+      "extensions": [".rws"],
+      "type": "directory"
+    },
+    {
+      "id": "dwarf-fortress",
+      "name": "Dwarf Fortress",
+      "savePaths": [{ "root": "documents", "pattern": "My Games/Dwarf Fortress/save" }],
+      "extensions": [""],
+      "type": "directory"
+    },
+    {
+      "id": "civilization-6",
+      "name": "Civilization VI",
+      "savePaths": [{ "root": "documents", "pattern": "My Games/Sid Meier's Civilization VI/Saves" }],
+      "extensions": [".Civ6Save"],
+      "type": "directory"
+    },
+    {
+      "id": "civilization-5",
+      "name": "Civilization V",
+      "savePaths": [{ "root": "documents", "pattern": "My Games/Sid Meier's Civilization 5/Saves" }],
+      "extensions": [".Civ5Save"],
+      "type": "directory"
+    },
+    {
+      "id": "subnautica",
+      "name": "Subnautica",
+      "savePaths": [{ "root": "appdata_locallow", "pattern": "Unknown Worlds/Subnautica/Subnautica/SavedGames" }],
+      "extensions": [".bin", ".json"],
+      "type": "directory"
+    },
+    {
+      "id": "subnautica-bz",
+      "name": "Subnautica: Below Zero",
+      "savePaths": [{ "root": "appdata_locallow", "pattern": "Unknown Worlds/Subnautica Below Zero/SubnauticaZero/SavedGames" }],
+      "extensions": [".bin", ".json"],
+      "type": "directory"
+    },
+    {
+      "id": "valheim",
+      "name": "Valheim",
+      "savePaths": [{ "root": "appdata_locallow", "pattern": "IronGate/Valheim" }],
+      "extensions": [".fwl", ".db"],
+      "type": "directory"
+    },
+    {
+      "id": "palworld",
+      "name": "Palworld",
+      "savePaths": [{ "root": "appdata_local", "pattern": "Pal/Saved/SaveGames" }],
+      "extensions": [".sav"],
+      "type": "directory"
+    },
+    {
+      "id": "no-mans-sky",
+      "name": "No Man's Sky",
+      "savePaths": [{ "root": "appdata_roaming", "pattern": "HelloGames/NMS" }],
+      "extensions": [".hg"],
+      "type": "directory"
+    },
+    {
+      "id": "the-witcher-3",
+      "name": "The Witcher 3",
+      "savePaths": [{ "root": "documents", "pattern": "The Witcher 3" }],
+      "extensions": [".sav"],
+      "type": "directory"
+    },
+    {
+      "id": "cyberpunk-2077",
+      "name": "Cyberpunk 2077",
+      "savePaths": [{ "root": "appdata_local", "pattern": "CD Projekt Red/Cyberpunk 2077/SaveGames" }],
+      "extensions": [".dat"],
+      "type": "directory"
+    },
+    {
+      "id": "gta-v",
+      "name": "Grand Theft Auto V",
+      "savePaths": [{ "root": "documents", "pattern": "Rockstar Games/GTA V/Profiles" }],
+      "extensions": [".dat"],
+      "type": "directory"
+    },
+    {
+      "id": "rdr2",
+      "name": "Red Dead Redemption 2",
+      "savePaths": [{ "root": "documents", "pattern": "Rockstar Games/Red Dead Redemption 2/Profiles" }],
+      "extensions": [".dat"],
+      "type": "directory"
+    },
+    {
+      "id": "undertale",
+      "name": "Undertale",
+      "savePaths": [{ "root": "appdata_local", "pattern": "UNDERTALE" }],
+      "extensions": [".ini", ""],
+      "type": "directory"
+    },
+    {
+      "id": "deltarune",
+      "name": "Deltarune",
+      "savePaths": [{ "root": "appdata_local", "pattern": "DELTARUNE" }],
+      "extensions": [".ini", ""],
+      "type": "directory"
+    },
+    {
+      "id": "animal-well",
+      "name": "Animal Well",
+      "savePaths": [{ "root": "appdata_local", "pattern": "Animal Well" }],
+      "extensions": [".sav"],
+      "type": "directory"
+    },
+    {
+      "id": "lethal-company",
+      "name": "Lethal Company",
+      "savePaths": [{ "root": "appdata_locallow", "pattern": "ZeekerssRBLX/Lethal Company" }],
+      "extensions": [".es3"],
+      "type": "directory"
+    },
+    {
+      "id": "content-warning",
+      "name": "Content Warning",
+      "savePaths": [{ "root": "appdata_locallow", "pattern": "Landfall Games/Content Warning" }],
+      "extensions": [".es3", ".save"],
+      "type": "directory"
+    },
+    {
+      "id": "enter-the-gungeon",
+      "name": "Enter the Gungeon",
+      "savePaths": [{ "root": "appdata_local", "pattern": "Dodge Roll/Enter the Gungeon" }],
+      "extensions": [".sav"],
+      "type": "directory"
+    },
+    {
+      "id": "risk-of-rain-2",
+      "name": "Risk of Rain 2",
+      "savePaths": [
+        { "root": "appdata_locallow", "pattern": "Hopoo Games/Risk of Rain 2" }
+      ],
+      "extensions": [".xml"],
+      "type": "directory"
+    },
+    {
+      "id": "oxygen-not-included",
+      "name": "Oxygen Not Included",
+      "savePaths": [{ "root": "documents", "pattern": "Klei/OxygenNotIncluded/save_files" }],
+      "extensions": [".sav"],
+      "type": "directory"
+    },
+    {
+      "id": "dont-starve-together",
+      "name": "Don't Starve Together",
+      "savePaths": [{ "root": "documents", "pattern": "Klei/DoNotStarveTogether" }],
+      "extensions": [".sav", ".meta"],
+      "type": "directory"
+    },
+    {
+      "id": "satisfactory",
+      "name": "Satisfactory",
+      "savePaths": [{ "root": "appdata_local", "pattern": "FactoryGame/Saved/SaveGames" }],
+      "extensions": [".sav"],
+      "type": "directory"
+    },
+    {
+      "id": "cities-skylines-2",
+      "name": "Cities: Skylines II",
+      "savePaths": [{ "root": "appdata_locallow", "pattern": "Colossal Order/Cities Skylines II/Saves" }],
+      "extensions": [".cid", ".cok"],
+      "type": "directory"
+    },
+    {
+      "id": "the-binding-of-isaac",
+      "name": "The Binding of Isaac: Repentance",
+      "savePaths": [{ "root": "documents", "pattern": "My Games/Binding of Isaac Repentance" }],
+      "extensions": [".dat"],
+      "type": "directory"
+    },
+    {
+      "id": "ori-wotw",
+      "name": "Ori and the Will of the Wisps",
+      "savePaths": [
+        { "root": "appdata_local", "pattern": "Ori and the Will of The Wisps" }
+      ],
+      "extensions": [".uberstate"],
+      "type": "directory"
+    },
+    {
+      "id": "inscryption",
+      "name": "Inscryption",
+      "savePaths": [{ "root": "appdata_locallow", "pattern": "Daniel Mullins Games/Inscryption" }],
+      "extensions": [".gwsave"],
+      "type": "directory"
+    },
+    {
+      "id": "vampire-survivors",
+      "name": "Vampire Survivors",
+      "savePaths": [{ "root": "appdata_roaming", "pattern": "Vampire_Survivors" }],
+      "extensions": [".sav", ".json"],
+      "type": "directory"
+    },
+    {
+      "id": "outer-wilds",
+      "name": "Outer Wilds",
+      "savePaths": [{ "root": "appdata_locallow", "pattern": "Mobius Digital/Outer Wilds" }],
+      "extensions": [".owsave", ".json"],
+      "type": "directory"
+    },
+    {
+      "id": "disco-elysium",
+      "name": "Disco Elysium",
+      "savePaths": [{ "root": "appdata_locallow", "pattern": "ZAUM Studio/Disco Elysium/SaveGames" }],
+      "extensions": [".ntwtf"],
+      "type": "directory"
+    },
+    {
+      "id": "resident-evil-4",
+      "name": "Resident Evil 4 Remake",
+      "savePaths": [{ "root": "appdata_local", "pattern": "CAPCOM/RE4" }],
+      "extensions": [".sav"],
+      "type": "directory"
+    },
+    {
+      "id": "monster-hunter-world",
+      "name": "Monster Hunter: World",
+      "savePaths": [{ "root": "appdata_local", "pattern": "CAPCOM/MONSTER HUNTER WORLD" }],
+      "extensions": [".dat"],
+      "type": "directory"
+    },
+    {
+      "id": "monster-hunter-rise",
+      "name": "Monster Hunter Rise",
+      "savePaths": [{ "root": "appdata_local", "pattern": "CAPCOM/MONSTER HUNTER RISE" }],
+      "extensions": [".bin"],
+      "type": "directory"
+    },
+    {
+      "id": "persona-5-royal",
+      "name": "Persona 5 Royal",
+      "savePaths": [{ "root": "appdata_roaming", "pattern": "SEGA/P5R" }],
+      "extensions": [".dat"],
+      "type": "directory"
+    },
+    {
+      "id": "nier-automata",
+      "name": "NieR:Automata",
+      "savePaths": [{ "root": "documents", "pattern": "My Games/NieR_Automata" }],
+      "extensions": [".dat"],
+      "type": "directory"
+    },
+    {
+      "id": "phasmophobia",
+      "name": "Phasmophobia",
+      "savePaths": [{ "root": "appdata_locallow", "pattern": "Kinetic Games/Phasmophobia" }],
+      "extensions": [".json", ".sav"],
+      "type": "directory"
+    },
+    {
+      "id": "among-us",
+      "name": "Among Us",
+      "savePaths": [{ "root": "appdata_locallow", "pattern": "Innersloth/Among Us" }],
+      "extensions": [".dat"],
+      "type": "directory"
+    },
+    {
+      "id": "tunic",
+      "name": "Tunic",
+      "savePaths": [{ "root": "appdata_locallow", "pattern": "Andrew Shouldice/Secret Legend" }],
+      "extensions": [".tunic"],
+      "type": "directory"
+    },
+    {
+      "id": "deaths-door",
+      "name": "Death's Door",
+      "savePaths": [{ "root": "appdata_locallow", "pattern": "Acid Nerve/DeathsDoor" }],
+      "extensions": [".save"],
+      "type": "directory"
+    }
+  ]
+}

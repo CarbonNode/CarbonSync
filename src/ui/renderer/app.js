@@ -282,6 +282,15 @@ function renderSettings(s) {
 }
 
 function setupSettings() {
+  document.getElementById('btn-save-name').addEventListener('click', async () => {
+    const name = document.getElementById('set-device-name').value.trim();
+    if (name) {
+      await api.setDeviceName(name);
+      toast(`Device name set to: ${name}`, 'success');
+      refresh();
+    }
+  });
+
   document.getElementById('btn-save-settings').addEventListener('click', async () => {
     await api.updateSettings({
       scanIntervalMinutes: parseInt(document.getElementById('set-scan-interval').value) || 5,
@@ -318,6 +327,7 @@ function setupSettings() {
     document.getElementById('set-bandwidth').value = s.bandwidthLimitMBps || 0;
     document.getElementById('set-concurrent').value = s.maxConcurrentTransfers || 4;
     document.getElementById('set-port').value = cfg.port || 21547;
+    document.getElementById('set-device-name').value = cfg.deviceName || '';
   });
   api.checkUpdate().then(r => {
     document.getElementById('current-version').textContent = r.current || '—';
@@ -330,16 +340,30 @@ function setupLiveEvents() {
   api.onProgress((p) => {
     const el = document.getElementById('scan-progress');
     if (p.phase === 'scanning' && p.total > 0) {
-      el.textContent = `Scanning: ${p.current}/${p.total} (${Math.round((p.current / p.total) * 100)}%) — ${p.file || ''}`;
-    } else el.textContent = '';
+      const pct = Math.round((p.current / p.total) * 100);
+      el.textContent = `Scanning: ${p.current}/${p.total} (${pct}%) — ${p.file || ''}`;
+      // Clear when done
+      if (p.current >= p.total) {
+        setTimeout(() => { el.textContent = ''; }, 2000);
+      }
+    } else if (p.phase === 'hashing') {
+      el.textContent = `Hashing: ${p.current}/${p.total} — ${p.file || ''}`;
+    } else {
+      el.textContent = '';
+    }
   });
   api.onActivity((a) => {
     if (a.type === 'client-connected') { addActivity('connect', `${a.deviceName || 'Client'} connected`); toast(`${a.deviceName} connected`, 'success'); }
     else if (a.type === 'client-disconnected') addActivity('disconnect', `${a.deviceName || 'Client'} disconnected`);
     else if (a.type === 'file-changes') addActivity('change', `${a.count} file(s) changed in ${a.folder}`);
     const badge = document.getElementById('status-badge');
-    badge.className = 'badge blue';
-    setTimeout(() => { badge.className = 'badge green'; }, 2000);
+    if (a.type === 'client-disconnected') {
+      badge.className = 'badge yellow';
+      setTimeout(() => { badge.className = 'badge green'; }, 5000);
+    } else {
+      badge.className = 'badge blue';
+      setTimeout(() => { badge.className = 'badge green'; }, 2000);
+    }
   });
 }
 

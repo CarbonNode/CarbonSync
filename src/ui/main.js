@@ -175,6 +175,14 @@ function setupIPC() {
   ipcMain.handle('window-minimize', () => mainWindow?.minimize());
   ipcMain.handle('window-close', () => mainWindow?.hide());
 
+  ipcMain.handle('set-device-name', (_, name) => {
+    if (name && server?.config) {
+      server.config.setDeviceName(name.trim());
+      return true;
+    }
+    return false;
+  });
+
   ipcMain.handle('rename-peer', (_, hostname, friendlyName) => {
     if (!server?.config?.data) return;
     if (!server.config.data.peers) server.config.data.peers = {};

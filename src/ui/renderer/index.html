@@ -89,8 +89,15 @@
       </div>
       <button class="btn" id="btn-save-settings" style="margin-top:12px;">Save Settings</button>
 
-      <div class="setting-section">
-        <h4>Updates</h4>
+      <div class="setting-group" style="grid-column: span 2;">
+        <label>Device Name</label>
+        <div style="display:flex;gap:6px;">
+          <input type="text" id="set-device-name" placeholder="My PC">
+          <button class="btn sm" id="btn-save-name">Save</button>
+        </div>
+      </div>
+
+      <div class="setting-section" style="grid-column: span 2;">
         <div class="setting-row">
           <span class="label">Current</span>
           <span class="value" id="current-version">—</span>
