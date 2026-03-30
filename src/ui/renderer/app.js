@@ -307,7 +307,10 @@ function renamePeer(hostname, currentName) {
       input.focus();
       input.select();
 
+      let saved = false;
       const save = async () => {
+        if (saved) return;
+        saved = true;
         const newName = input.value.trim();
         if (newName && newName !== currentName) {
           await api.renamePeer(hostname, newName);
@@ -317,8 +320,8 @@ function renamePeer(hostname, currentName) {
       };
 
       input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') save();
-        if (e.key === 'Escape') refresh();
+        if (e.key === 'Enter') { e.preventDefault(); save(); }
+        if (e.key === 'Escape') { saved = true; refresh(); }
       });
       input.addEventListener('blur', save);
       break;

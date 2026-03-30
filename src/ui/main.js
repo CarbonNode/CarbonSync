@@ -267,11 +267,16 @@ function setupIPC() {
       }
       // Save peer address for auto-reconnect on restart
       if (!server.config.data.savedPeers) server.config.data.savedPeers = [];
+      // Get friendly name if we've renamed this peer
+      const friendlyName = server.config.data.peers?.[result.deviceName] || result.deviceName || ip;
+
       const existing = server.config.data.savedPeers.find(p => p.ip === ip && p.port === port);
-      if (!existing) {
-        server.config.data.savedPeers.push({ ip, port });
-        server.config.save();
+      if (existing) {
+        existing.deviceName = friendlyName;
+      } else {
+        server.config.data.savedPeers.push({ ip, port, deviceName: friendlyName });
       }
+      server.config.save();
       sendToUI('activity', { type: 'connect', message: `Connected to ${result.deviceName || ip}:${port} — syncing folders`, time: Date.now() });
     }
     sendToUI('status-update', server?.getStatus());
@@ -493,10 +498,13 @@ app.on('ready', async () => {
     if (savedPeers.length > 0) {
       console.log(`Reconnecting to ${savedPeers.length} saved peer(s)...`);
       for (const peer of savedPeers) {
+        const displayName = peer.deviceName || peer.ip;
         server.connectToPeer(peer.ip, peer.port).then(result => {
           if (result.success) {
-            sendToUI('activity', { type: 'connect', message: `Reconnected to ${result.deviceName || peer.ip}`, time: Date.now() });
-            const peerEntry = { role: 'peer', ip: peer.ip, port: peer.port, hostname: result.deviceName || peer.ip };
+            // Use saved friendly name, not raw hostname
+            const name = peer.deviceName || result.deviceName || peer.ip;
+            sendToUI('activity', { type: 'connect', message: `Reconnected to ${name}`, time: Date.now() });
+            const peerEntry = { role: 'peer', ip: peer.ip, port: peer.port, hostname: name, friendlyName: name };
             if (server.discovery) server.discovery.services.set(peer.ip, peerEntry);
             sendToUI('status-update', server.getStatus());
           }
