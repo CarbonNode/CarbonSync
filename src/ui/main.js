@@ -335,6 +335,10 @@ function setupIPC() {
     return server?.gameSaveManager?.massLookup();
   });
 
+  ipcMain.handle('backup-all', async () => {
+    return server?.gameSaveManager?.backupAll();
+  });
+
   ipcMain.handle('add-custom-game', async (_, cfg) => {
     return server?.gameSaveManager?.addCustomGame(cfg);
   });

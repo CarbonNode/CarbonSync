@@ -552,6 +552,25 @@ class GameSaveManager extends EventEmitter {
     return this.backup.listBackupFiles(displayName, backupDir);
   }
 
+  /**
+   * Backup all enabled games at once.
+   */
+  async backupAll() {
+    let success = 0;
+    let skipped = 0;
+    for (const [gameId, entry] of this._library) {
+      if (!entry.enabled || !entry.saveBase) { skipped++; continue; }
+      try {
+        const result = await this.backupNow(gameId);
+        if (result) success++;
+        else skipped++;
+      } catch {
+        skipped++;
+      }
+    }
+    return { success, skipped };
+  }
+
   async backupNow(gameId) {
     const entry = this._library.get(gameId);
     if (!entry) throw new Error(`Unknown game: ${gameId}`);

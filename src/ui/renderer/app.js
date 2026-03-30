@@ -829,6 +829,18 @@ function setupGames() {
     btn.disabled = false; btn.textContent = 'Mass Lookup';
   });
 
+  // Backup All
+  document.getElementById('btn-backup-all').addEventListener('click', async () => {
+    const btn = document.getElementById('btn-backup-all');
+    btn.disabled = true; btn.textContent = 'Backing up...';
+    try {
+      const result = await api.backupAll();
+      toast(`Backed up ${result.success} game(s)${result.skipped ? `, ${result.skipped} skipped` : ''}`, 'success');
+      refreshGames();
+    } catch (err) { toast(`Backup failed: ${err.message}`, 'error'); }
+    btn.disabled = false; btn.textContent = 'Backup All';
+  });
+
   document.getElementById('btn-add-game').addEventListener('click', openAddGamePopup);
 
   // Game settings popup
