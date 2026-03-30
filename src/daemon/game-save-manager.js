@@ -60,8 +60,11 @@ class GameSaveManager extends EventEmitter {
 
     // Always scan on startup — library file may not survive reinstalls
     console.log('Scanning for existing game saves...');
+    const dismissed = this._getMergedDismissals();
     const existing = await this.detector.scanExistingGames();
     for (const { game, saveBase, rootKey, isHeuristic } of existing) {
+      if (dismissed.has(game.id)) continue;
+      if (this._isBlockedByName(game.name)) continue;
       this._ensureLibraryEntry(game, saveBase, rootKey, isHeuristic);
     }
 
@@ -313,7 +316,30 @@ class GameSaveManager extends EventEmitter {
   }
 
   _getMergedDismissals() {
-    return new Set(this.config.data.gameSaveBlockedGames || []);
+    const set = new Set(this.config.data.gameSaveBlockedGames || []);
+    // Also include global blocklist from app data
+    try {
+      const blocklist = require('../data/blocklist.json');
+      if (blocklist.blockedGameIds) {
+        for (const id of blocklist.blockedGameIds) set.add(id);
+      }
+    } catch {}
+    return set;
+  }
+
+  _isBlockedByName(name) {
+    if (!name) return true;
+    // Block any entry with .Conflict or .conflict in the name
+    if (name.toLowerCase().includes('.conflict') || name.toLowerCase().includes('conflict')) {
+      if (name.includes('.Conflict') || name.includes('summertimesaga.Conflict')) return true;
+    }
+    try {
+      const blocklist = require('../data/blocklist.json');
+      if (blocklist.blockedGameNames) {
+        return blocklist.blockedGameNames.includes(name);
+      }
+    } catch {}
+    return false;
   }
 
   async _saveLibrary() {
@@ -429,6 +455,7 @@ class GameSaveManager extends EventEmitter {
     const dismissed = this._getMergedDismissals();
     for (const { game, saveBase, rootKey, isHeuristic } of existing) {
       if (dismissed.has(game.id)) continue;
+      if (this._isBlockedByName(game.name)) continue;
       if (!this._library.has(game.id)) {
         this._ensureLibraryEntry(game, saveBase, rootKey, isHeuristic);
         newCount++;
