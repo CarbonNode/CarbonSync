@@ -368,8 +368,8 @@ class CarbonSyncDevice extends EventEmitter {
             this._pullFolderFromPeer(peerInfo, folderConfig);
           }
         } else if (msg.type === MSG.FOLDER_LIST) {
-          this.peerFolders.set(key, msg.folders);
-          this.emit('peer-folders', { peer: key, deviceName: peerInfo.deviceName, folders: msg.folders });
+          this.peerFolders.set(peerInfo.deviceName || key, msg.folders);
+          this.emit('peer-folders', { peer: peerInfo.deviceName || key, deviceName: peerInfo.deviceName, folders: msg.folders });
         }
       });
 
@@ -512,26 +512,37 @@ class CarbonSyncDevice extends EventEmitter {
    * Get all connected peers.
    */
   _getRemoteFolders() {
-    const result = [];
     const myFolderNames = new Set(this.config.folders.map(f => f.name));
     const peers = this.config.data.peers || {};
+    // Deduplicate by folder name — show each remote folder only once (first source wins)
+    const seen = new Map(); // folderName -> entry
     for (const [peerKey, folders] of this.peerFolders) {
+      // Resolve device name: try outbound peers first, then inbound clients
       const peerInfo = this.peerConnections.get(peerKey);
-      const deviceName = peerInfo?.deviceName || peerKey;
+      let deviceName = peerInfo?.deviceName || '';
+      if (!deviceName) {
+        // Try inbound clients by IP match
+        const ip = peerKey.split(':')[0];
+        for (const c of (this.transport?.getConnectedClients() || [])) {
+          if (c.ip === ip) { deviceName = c.deviceName; break; }
+        }
+      }
+      deviceName = deviceName || peerKey;
       const friendlyName = peers[deviceName] || deviceName;
+
       for (const f of folders) {
         if (myFolderNames.has(f.name)) continue;
         if (f.internal) continue;
-        result.push({
+        if (seen.has(f.name)) continue; // Already shown from another connection
+        seen.set(f.name, {
           name: f.name,
           fileCount: f.fileCount || 0,
           direction: f.direction || 'both',
-          peerKey,
           deviceName: friendlyName,
         });
       }
     }
-    return result;
+    return Array.from(seen.values());
   }
 
   getConnectedPeers() {
@@ -901,13 +912,10 @@ class CarbonSyncDevice extends EventEmitter {
           await this._handleTransferEnd(client, msg);
           break;
         case MSG.FOLDER_LIST:
-          // Inbound client sent us their folder list
+          // Inbound client sent us their folder list — key by deviceName to deduplicate
           if (client.deviceName) {
-            const ip = client.socket?.remoteAddress?.replace('::ffff:', '') || '';
-            const port = client.socket?.remotePort;
-            const key = `${ip}:${port}`;
-            this.peerFolders.set(key, msg.folders || []);
-            this.emit('peer-folders', { peer: key, deviceName: client.deviceName, folders: msg.folders || [] });
+            this.peerFolders.set(client.deviceName, msg.folders || []);
+            this.emit('peer-folders', { peer: client.deviceName, deviceName: client.deviceName, folders: msg.folders || [] });
           }
           break;
         case MSG.PING:
