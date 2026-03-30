@@ -36,9 +36,18 @@ const MSG = {
   SUBSCRIBE: 'subscribe',   // Client subscribes to folder changes
   NOTIFY: 'notify',         // Server pushes change notification to subscribed clients
 
+  // File push (device → hub)
+  FILE_PUSH: 'file_push',             // Device pushes a file to hub
+  FILE_PUSH_ACK: 'file_push_ack',     // Hub acknowledges file push
+  FILE_DELETE_PUSH: 'file_delete_push', // Device pushes a deletion
+  FILE_DELETE_ACK: 'file_delete_ack',
+  PUSH_INDEX: 'push_index',           // Device sends its index for a push folder
+  PUSH_DIFF: 'push_diff',             // Hub responds with what it needs
+  FOLDER_LIST: 'folder_list',         // Hub broadcasts available folders
+
   // Game saves
-  SAVE_PUSH: 'save_push',             // Client pushes a game save to server
-  SAVE_PUSH_ACK: 'save_push_ack',     // Server acknowledges save push
+  SAVE_PUSH: 'save_push',
+  SAVE_PUSH_ACK: 'save_push_ack',
 
   // Status
   PROGRESS: 'progress',     // Sync progress update

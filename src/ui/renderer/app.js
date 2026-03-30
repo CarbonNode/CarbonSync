@@ -42,7 +42,8 @@ async function refresh() {
   try { currentStatus = await api.getStatus(); } catch { return; }
   const s = currentStatus;
 
-  document.getElementById('subtitle').textContent = s.deviceName || 'Starting...';
+  const role = s.isHub ? 'Hub' : (s.hubConnected ? `Connected to hub` : 'Disconnected from hub');
+  document.getElementById('subtitle').textContent = `${s.deviceName || 'Starting...'} — ${role}`;
   document.getElementById('port').textContent = s.port || '—';
   document.getElementById('clients').textContent = s.connectedClients || 0;
   document.getElementById('tls-status').innerHTML = s.tlsEnabled
@@ -63,6 +64,7 @@ function renderFolders(folders) {
 
   el.innerHTML = folders.map(f => {
     const excludeCount = (f.excludes || []).length;
+    const dir = f.direction || 'both';
 
     // Device sync icons
     let deviceHtml = '';
@@ -93,6 +95,11 @@ function renderFolders(folders) {
           <div class="device-row">${deviceHtml}</div>
         </div>
         <div class="folder-btns">
+          <select class="direction-select" onchange="setDirection('${escA(f.name)}', this.value)">
+            <option value="both" ${dir==='both'?'selected':''}>⇆ Push + Receive</option>
+            <option value="push" ${dir==='push'?'selected':''}>⬆ Push to Hub</option>
+            <option value="receive" ${dir==='receive'?'selected':''}>⬇ Receive from Hub</option>
+          </select>
           <button class="btn sm ghost" onclick="openFolderSettings('${escA(f.name)}')">⚙</button>
           <button class="btn sm ghost" onclick="rescanFolder('${escA(f.name)}')">Rescan</button>
           <button class="btn sm red" onclick="removeFolder('${escA(f.path)}')">Remove</button>
@@ -169,6 +176,12 @@ function setupFolderActions() {
   document.getElementById('folder-settings-popup').addEventListener('click', (e) => {
     if (e.target === e.currentTarget) closePopup();
   });
+}
+
+async function setDirection(folderName, direction) {
+  await api.setFolderDirection(folderName, direction);
+  toast(`${folderName}: ${direction}`, 'success');
+  refresh();
 }
 
 async function rescanFolder(name) {
@@ -282,6 +295,21 @@ function renderSettings(s) {
 }
 
 function setupSettings() {
+  document.getElementById('btn-save-hub').addEventListener('click', async () => {
+    const addr = document.getElementById('set-hub-address').value.trim();
+    const key = document.getElementById('set-hub-key').value.trim();
+    const status = document.getElementById('hub-status');
+    await api.setHubConnection(addr, key);
+    if (addr) {
+      status.textContent = `Connecting to ${addr}...`;
+      toast(`Hub set to ${addr}`, 'success');
+    } else {
+      status.textContent = 'This PC is the hub';
+      toast('Running as hub', 'info');
+    }
+    refresh();
+  });
+
   document.getElementById('btn-save-name').addEventListener('click', async () => {
     const name = document.getElementById('set-device-name').value.trim();
     if (name) {
@@ -328,6 +356,10 @@ function setupSettings() {
     document.getElementById('set-concurrent').value = s.maxConcurrentTransfers || 4;
     document.getElementById('set-port').value = cfg.port || 21547;
     document.getElementById('set-device-name').value = cfg.deviceName || '';
+    document.getElementById('set-hub-address').value = cfg.hubAddress || '';
+    document.getElementById('set-hub-key').value = cfg.hubApiKey || '';
+    const hubStatus = document.getElementById('hub-status');
+    hubStatus.textContent = cfg.hubAddress ? `Connected to ${cfg.hubAddress}` : 'This PC is the hub';
   });
   api.checkUpdate().then(r => {
     document.getElementById('current-version').textContent = r.current || '—';
@@ -336,9 +368,79 @@ function setupSettings() {
 
 // ---- Games ----
 
+let scanDirsExpanded = false;
+const expandedBackups = new Set(); // "gameId:backupDir" keys
+
 async function refreshGames() {
   try { gameLibrary = await api.getGameLibrary(); } catch { gameLibrary = []; }
   renderGames();
+  renderScanDirs();
+  renderScanStatus();
+}
+
+function renderScanStatus() {
+  const el = document.getElementById('games-scan-status');
+  if (!el) return;
+  api.getConfig().then(cfg => {
+    const enabled = cfg.settings?.gameSaveEnabled !== false;
+    if (!enabled) {
+      el.innerHTML = '<span style="color:var(--red)">Detection disabled</span>';
+    } else {
+      const dirs = cfg.settings?.gameSaveScanDirs || ['documents', 'appdata_roaming', 'appdata_local', 'appdata_locallow'];
+      el.innerHTML = `<span style="color:var(--green)">Watching ${dirs.length} dir${dirs.length !== 1 ? 's' : ''}</span>`;
+    }
+  }).catch(() => {});
+}
+
+const SCAN_DIR_LABELS = {
+  documents: 'Documents',
+  appdata_roaming: 'AppData / Roaming',
+  appdata_local: 'AppData / Local',
+  appdata_locallow: 'AppData / LocalLow',
+};
+
+function toggleScanDirsPanel() {
+  scanDirsExpanded = !scanDirsExpanded;
+  const body = document.getElementById('scan-dirs-body');
+  const chevron = document.getElementById('scan-dirs-chevron');
+  if (scanDirsExpanded) {
+    body.classList.remove('hidden');
+    chevron.classList.add('expanded');
+  } else {
+    body.classList.add('hidden');
+    chevron.classList.remove('expanded');
+  }
+}
+
+async function renderScanDirs() {
+  const body = document.getElementById('scan-dirs-body');
+  if (!body) return;
+  let cfg;
+  try { cfg = await api.getConfig(); } catch { return; }
+  const enabled = cfg.settings?.gameSaveScanDirs || ['documents', 'appdata_roaming', 'appdata_local', 'appdata_locallow'];
+
+  body.innerHTML = Object.entries(SCAN_DIR_LABELS).map(([key, label]) => {
+    const isOn = enabled.includes(key);
+    return `<div class="scan-dir-row">
+      <label class="game-toggle">
+        <input type="checkbox" ${isOn ? 'checked' : ''} onchange="toggleScanDir('${key}', this.checked)">
+        <span class="toggle-slider"></span>
+      </label>
+      <span class="scan-dir-label">${label}</span>
+    </div>`;
+  }).join('');
+}
+
+async function toggleScanDir(dirKey, enabled) {
+  let cfg;
+  try { cfg = await api.getConfig(); } catch { return; }
+  let dirs = cfg.settings?.gameSaveScanDirs || ['documents', 'appdata_roaming', 'appdata_local', 'appdata_locallow'];
+  if (enabled && !dirs.includes(dirKey)) dirs.push(dirKey);
+  else if (!enabled) dirs = dirs.filter(d => d !== dirKey);
+  await api.updateSettings({ gameSaveScanDirs: dirs });
+  toast(enabled ? `Now watching ${SCAN_DIR_LABELS[dirKey]}` : `Stopped watching ${SCAN_DIR_LABELS[dirKey]}`, 'success');
+  renderScanDirs();
+  renderScanStatus();
 }
 
 function renderGames() {
@@ -420,15 +522,34 @@ async function loadGameHistory(gameId) {
     }
 
     el.innerHTML = history.map(h => {
+      const isPreRestore = h.dir.startsWith('pre-restore-');
+      const backupKey = `${gameId}:${h.dir}`;
+      const filesExpanded = expandedBackups.has(backupKey);
       const date = new Date(h.timestamp);
       const dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
-      return `<div class="save-row">
-        <span class="save-time">${dateStr}</span>
-        <span class="save-detail">${h.fileCount} file${h.fileCount !== 1 ? 's' : ''}, ${fmt(h.totalSize)}</span>
-        <span class="save-device">${esc(h.sourceDevice)}</span>
-        <button class="btn sm" onclick="restoreSave('${escA(gameId)}', '${escA(h.dir)}')">Restore</button>
+      return `<div class="save-entry${isPreRestore ? ' pre-restore' : ''}">
+        <div class="save-row">
+          <svg class="save-chevron${filesExpanded ? ' expanded' : ''}" viewBox="0 0 24 24" width="12" height="12"
+               onclick="toggleBackupFiles('${escA(gameId)}', '${escA(h.dir)}')" style="cursor:pointer;flex-shrink:0;">
+            <path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+          <span class="save-time">${dateStr}</span>
+          ${isPreRestore ? '<span class="save-safety-tag">PRE-RESTORE</span>' : ''}
+          <span class="save-detail">${h.fileCount} file${h.fileCount !== 1 ? 's' : ''}, ${fmt(h.totalSize)}</span>
+          <span class="save-device">${esc(h.sourceDevice)}</span>
+          <button class="btn sm" onclick="restoreSave('${escA(gameId)}', '${escA(h.dir)}')">Restore</button>
+        </div>
+        ${filesExpanded ? `<div class="save-files" id="files-${backupKey.replace(/[^a-z0-9-]/gi, '_')}"><span class="save-files-loading">Loading files...</span></div>` : ''}
       </div>`;
     }).join('');
+
+    // Load file lists for expanded backups
+    for (const key of expandedBackups) {
+      if (key.startsWith(gameId + ':')) {
+        const dir = key.slice(gameId.length + 1);
+        loadBackupFiles(gameId, dir);
+      }
+    }
   } catch (err) {
     el.innerHTML = `<div class="empty" style="padding:8px 0;color:var(--red);">Error: ${esc(err.message)}</div>`;
   }
@@ -452,12 +573,52 @@ async function backupGameNow(gameId) {
 }
 
 async function restoreSave(gameId, backupDir) {
-  if (!confirm('Restore this save? Current game saves will be overwritten.')) return;
+  const game = gameLibrary.find(g => g.id === gameId);
+  if (game?.running) {
+    toast('Game appears to be running — close it before restoring', 'error');
+    return;
+  }
+  if (!confirm('Restore this save? A safety backup of your current save will be created first.')) return;
   try {
     const result = await api.restoreSave(gameId, backupDir);
-    toast(`Restored ${result.restoredFiles} files`, 'success');
+    toast(`Restored ${result.restoredFiles} files (pre-restore backup saved)`, 'success');
+    refreshGames();
   } catch (err) {
     toast(`Restore failed: ${err.message}`, 'error');
+  }
+}
+
+function toggleBackupFiles(gameId, dir) {
+  const key = `${gameId}:${dir}`;
+  if (expandedBackups.has(key)) {
+    expandedBackups.delete(key);
+  } else {
+    expandedBackups.add(key);
+  }
+  // Re-render just the history for this game
+  loadGameHistory(gameId);
+}
+
+async function loadBackupFiles(gameId, dir) {
+  const key = `${gameId}:${dir}`;
+  const elId = `files-${key.replace(/[^a-z0-9-]/gi, '_')}`;
+  const el = document.getElementById(elId);
+  if (!el) return;
+
+  try {
+    const files = await api.getBackupFiles(gameId, dir);
+    if (!files || files.length === 0) {
+      el.innerHTML = '<span class="save-files-empty">No files</span>';
+      return;
+    }
+    el.innerHTML = files.map(f =>
+      `<div class="save-file-row">
+        <span class="save-file-name">${esc(f.path)}</span>
+        <span class="save-file-size">${fmt(f.size)}</span>
+      </div>`
+    ).join('');
+  } catch {
+    el.innerHTML = '<span class="save-files-empty">Could not list files</span>';
   }
 }
 
@@ -608,6 +769,31 @@ function setupGames() {
   });
   document.getElementById('btn-pick-game-folder').addEventListener('click', pickGameFolder);
   document.getElementById('btn-confirm-add-game').addEventListener('click', confirmAddGame);
+
+  // Game save settings in Settings tab
+  const saveSettingsBtn = document.getElementById('btn-save-gamesave-settings');
+  if (saveSettingsBtn) {
+    saveSettingsBtn.addEventListener('click', async () => {
+      await api.updateSettings({
+        gameSaveEnabled: document.getElementById('set-gamesave-enabled').checked,
+        gameSaveMaxVersions: parseInt(document.getElementById('set-gamesave-versions').value) || 10,
+        gameSaveAutoRestore: document.getElementById('set-gamesave-autorestore').checked,
+      });
+      toast('Game save settings saved', 'success');
+      renderScanStatus();
+    });
+  }
+
+  // Load game save settings
+  api.getConfig().then(cfg => {
+    const s = cfg.settings || {};
+    const el1 = document.getElementById('set-gamesave-enabled');
+    const el2 = document.getElementById('set-gamesave-versions');
+    const el3 = document.getElementById('set-gamesave-autorestore');
+    if (el1) el1.checked = s.gameSaveEnabled !== false;
+    if (el2) el2.value = s.gameSaveMaxVersions || 10;
+    if (el3) el3.checked = !!s.gameSaveAutoRestore;
+  }).catch(() => {});
 
   // Initial load
   refreshGames();

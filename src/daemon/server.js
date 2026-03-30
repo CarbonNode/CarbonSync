@@ -400,6 +400,7 @@ class CarbonSyncServer extends EventEmitter {
 
   async stop() {
     if (this._scanInterval) { clearInterval(this._scanInterval); this._scanInterval = null; }
+    if (this.gameSaveManager) await this.gameSaveManager.stop();
     if (this.discovery) this.discovery.stop();
     if (this.transport) this.transport.stop();
     if (this.engine) await this.engine.stop();

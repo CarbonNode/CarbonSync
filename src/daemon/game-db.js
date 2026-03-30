@@ -57,6 +57,10 @@ const SAVE_EXTENSIONS = new Set([
   '.rws', '.fos', '.ess', '.lsv', '.owsave',
   '.gwsave', '.celeste', '.jkr', '.ntwtf',
   '.autosave', '.uberstate', '.tunic',
+  // Engine-specific save extensions
+  '.rpgsave',         // RPG Maker MV/MZ
+  '.rvdata2', '.rvdata', '.rxdata',  // RPG Maker VX Ace / VX / XP
+  '.save',            // Ren'Py
 ]);
 
 // Directory names that strongly suggest game saves
@@ -66,10 +70,16 @@ const SAVE_DIR_NAMES = new Set([
   'savefiles', 'saveslots',
 ]);
 
-// Unity games use AppData/LocalLow/<Company>/<Game>/
-// Unreal games use AppData/Local/<Game>/Saved/SaveGames/
+// Engine patterns for heuristic detection
+// RPG Maker MV/MZ: AppData/Local/<Game Title>/ with .rpgsave files
+// Ren'Py: AppData/Roaming/RenPy/<game>/ with .save files
+// Godot: AppData/Roaming/Godot/app_userdata/<project>/
+// Unreal: <Game>/Saved/SaveGames/
+// Unity: LocalLow/<Company>/<Game>/
 const UNREAL_SAVE_PATTERN = /[/\\]Saved[/\\]SaveGames[/\\]/i;
-const UNITY_LOCALLOW_RE = /^[^/\\]+[/\\][^/\\]+[/\\]/; // Company/Game/ at start of LocalLow relative path
+const RENPY_PATTERN = /^RenPy[/\\]([^/\\]+)[/\\]/i;
+const GODOT_PATTERN = /^Godot[/\\]app_userdata[/\\]([^/\\]+)[/\\]/i;
+const RPGMAKER_EXTENSIONS = new Set(['.rpgsave', '.rvdata2', '.rvdata', '.rxdata']);
 
 class GameDB {
   constructor(config) {
@@ -203,6 +213,9 @@ class GameDB {
   /**
    * Heuristic detection for unknown games.
    * Returns { id, name, saveBase, confidence } or null.
+   *
+   * Checks engine-specific patterns first (high confidence),
+   * then generic save-like signals (lower confidence).
    */
   detectHeuristic(absPath, rootKey) {
     const roots = this.resolveRoots();
@@ -213,28 +226,67 @@ class GameDB {
     const relFromRoot = normalized.slice(rootDir.replace(/\\/g, '/').length + 1);
     const parts = relFromRoot.split('/');
     const ext = path.extname(absPath).toLowerCase();
-    const fileName = path.basename(absPath);
 
     // Skip if user already blocked this
     const blockedGames = this.config?.data?.gameSaveBlockedGames || [];
 
-    // Check save-like extension
     const hasSaveExt = SAVE_EXTENSIONS.has(ext);
-
-    // Check parent directory names for save-like patterns
     const hasSaveDir = parts.some(p => SAVE_DIR_NAMES.has(p.toLowerCase()));
 
+    // --- Engine-specific patterns (high confidence) ---
+
+    // RPG Maker MV/MZ: Local/<Game Title>/ with .rpgsave files
+    // RPG Maker VX Ace/VX/XP: can also be in Local with .rvdata2/.rvdata/.rxdata
+    if (RPGMAKER_EXTENSIONS.has(ext)) {
+      // The game folder is the first component under the root
+      const gameName = parts[0];
+      if (gameName) {
+        const saveBase = path.join(rootDir, gameName);
+        const id = `rpgmaker-${gameName}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+        if (!blockedGames.includes(id)) {
+          return { id, name: gameName, saveBase, confidence: 'engine', rootKey, engine: 'RPG Maker' };
+        }
+      }
+    }
+
+    // Ren'Py: Roaming/RenPy/<game_name>/ with .save files
+    if (rootKey === 'appdata_roaming') {
+      const renpyMatch = relFromRoot.match(RENPY_PATTERN);
+      if (renpyMatch) {
+        const gameName = renpyMatch[1];
+        const saveBase = path.join(rootDir, 'RenPy', gameName);
+        const id = `renpy-${gameName}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+        if (!blockedGames.includes(id)) {
+          return { id, name: gameName, saveBase, confidence: 'engine', rootKey, engine: "Ren'Py" };
+        }
+      }
+    }
+
+    // Godot: Roaming/Godot/app_userdata/<project_name>/
+    if (rootKey === 'appdata_roaming') {
+      const godotMatch = relFromRoot.match(GODOT_PATTERN);
+      if (godotMatch) {
+        const gameName = godotMatch[1];
+        const saveBase = path.join(rootDir, 'Godot', 'app_userdata', gameName);
+        const id = `godot-${gameName}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+        if (!blockedGames.includes(id)) {
+          return { id, name: gameName, saveBase, confidence: 'engine', rootKey, engine: 'Godot' };
+        }
+      }
+    }
+
     // Unity game in LocalLow: LocalLow/<Company>/<Game>/
+    // LocalLow is almost exclusively Unity games — ANY change here is likely a game.
+    // No need to require save-like extensions; files like save.json, SavefileNames.json,
+    // or extensionless saves (NANOSAVE_0000) are all valid.
     if (rootKey === 'appdata_locallow' && parts.length >= 2) {
       const company = parts[0];
       const gameName = parts[1];
       const saveBase = path.join(rootDir, company, gameName);
-      const id = `heuristic-${company}-${gameName}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+      const id = `unity-${company}-${gameName}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
 
-      if (blockedGames.includes(id)) return null;
-
-      if (hasSaveExt || hasSaveDir) {
-        return { id, name: gameName, saveBase, confidence: 'heuristic', rootKey };
+      if (!blockedGames.includes(id)) {
+        return { id, name: gameName, saveBase, confidence: 'engine', rootKey, engine: 'Unity' };
       }
     }
 
@@ -244,35 +296,36 @@ class GameDB {
       if (unrealMatch) {
         const gameName = unrealMatch[1];
         const saveBase = normalized.split(/[/\\]Saved[/\\]SaveGames/i)[0] + '/Saved/SaveGames';
-        const id = `heuristic-unreal-${gameName}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+        const id = `unreal-${gameName}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
 
-        if (blockedGames.includes(id)) return null;
-
-        return { id, name: gameName, saveBase: saveBase.replace(/\//g, path.sep), confidence: 'heuristic', rootKey };
+        if (!blockedGames.includes(id)) {
+          return { id, name: gameName, saveBase: saveBase.replace(/\//g, path.sep), confidence: 'engine', rootKey, engine: 'Unreal' };
+        }
       }
     }
 
-    // Generic: file with save extension inside a directory that looks like a game
+    // --- Generic patterns (lower confidence) ---
+
+    // File with save extension inside a named directory
     if (hasSaveExt && parts.length >= 1) {
-      // Use first directory component as game name
       const gameName = parts[0];
       const saveBase = path.join(rootDir, gameName);
       const id = `heuristic-${rootKey}-${gameName}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
 
-      if (blockedGames.includes(id)) return null;
-
-      return { id, name: gameName, saveBase, confidence: 'heuristic', rootKey };
+      if (!blockedGames.includes(id)) {
+        return { id, name: gameName, saveBase, confidence: 'heuristic', rootKey };
+      }
     }
 
-    // Directory named "Saves" or similar
+    // Directory named "Saves" or similar under a parent that looks like a game
     if (hasSaveDir && parts.length >= 2) {
       const gameName = parts[0];
       const saveBase = path.join(rootDir, gameName);
       const id = `heuristic-${rootKey}-${gameName}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
 
-      if (blockedGames.includes(id)) return null;
-
-      return { id, name: gameName, saveBase, confidence: 'heuristic', rootKey };
+      if (!blockedGames.includes(id)) {
+        return { id, name: gameName, saveBase, confidence: 'heuristic', rootKey };
+      }
     }
 
     return null;

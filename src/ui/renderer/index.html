@@ -56,11 +56,23 @@
     <!-- Games Tab -->
     <div class="tab-pane" id="tab-games">
       <div class="games-toolbar">
-        <span class="games-count" id="games-count">0 games detected</span>
+        <div class="games-toolbar-left">
+          <span class="games-count" id="games-count">0 games detected</span>
+          <span class="games-scan-status" id="games-scan-status"></span>
+        </div>
         <div class="games-toolbar-btns">
           <button class="btn sm ghost" id="btn-scan-games">Rescan</button>
           <button class="btn sm" id="btn-add-game">+ Custom Game</button>
         </div>
+      </div>
+      <div id="scan-dirs-panel" class="scan-dirs-panel">
+        <div class="scan-dirs-header" onclick="toggleScanDirsPanel()">
+          <svg class="scan-dirs-chevron" id="scan-dirs-chevron" viewBox="0 0 24 24" width="14" height="14">
+            <path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          </svg>
+          <span>Watched Directories</span>
+        </div>
+        <div class="scan-dirs-body hidden" id="scan-dirs-body"></div>
       </div>
       <div id="games-list"></div>
     </div>
@@ -82,6 +94,17 @@
 
     <!-- Settings Tab -->
     <div class="tab-pane" id="tab-settings">
+      <div class="setting-section" style="margin-top:0; padding-top:0; border-top:none;">
+        <h4>Hub Connection</h4>
+        <p class="popup-hint">Leave empty if this PC is the hub. Otherwise enter the hub's address to sync with it.</p>
+        <div style="display:flex; gap:6px; margin-top:6px;">
+          <input type="text" id="set-hub-address" placeholder="Hub IP:port (e.g. 192.168.0.100:21547)" style="flex:1; background:var(--bg); border:1px solid var(--border); border-radius:5px; padding:7px 10px; color:var(--text); font-size:13px; outline:none;">
+          <input type="text" id="set-hub-key" placeholder="Hub API key" style="flex:1; background:var(--bg); border:1px solid var(--border); border-radius:5px; padding:7px 10px; color:var(--text); font-size:13px; outline:none;">
+          <button class="btn" id="btn-save-hub">Connect</button>
+        </div>
+        <div id="hub-status" style="font-size:11px; margin-top:4px; color:var(--text-dim);"></div>
+      </div>
+
       <div class="settings-grid">
         <div class="setting-group">
           <label>Scan Interval (minutes)</label>
@@ -101,6 +124,30 @@
         </div>
       </div>
       <button class="btn" id="btn-save-settings" style="margin-top:12px;">Save Settings</button>
+
+      <div class="setting-section">
+        <h4>Game Save Detection</h4>
+        <div class="setting-row">
+          <span class="label">Enabled</span>
+          <label class="game-toggle">
+            <input type="checkbox" id="set-gamesave-enabled" checked>
+            <span class="toggle-slider"></span>
+          </label>
+        </div>
+        <div class="setting-row">
+          <span class="label">Max Backups</span>
+          <input type="number" id="set-gamesave-versions" min="1" max="50" value="10" style="width:70px; background:var(--bg); border:1px solid var(--border); border-radius:5px; padding:5px 8px; color:var(--text); font-size:13px; outline:none;">
+        </div>
+        <div class="setting-row">
+          <span class="label">Auto-Restore</span>
+          <label class="game-toggle">
+            <input type="checkbox" id="set-gamesave-autorestore">
+            <span class="toggle-slider"></span>
+          </label>
+          <span style="font-size:10px;color:var(--text-dim);">Automatically restore synced saves when game is not running</span>
+        </div>
+        <button class="btn sm" id="btn-save-gamesave-settings" style="margin-top:8px;">Save Game Settings</button>
+      </div>
 
       <div class="setting-group" style="grid-column: span 2;">
         <label>Device Name</label>

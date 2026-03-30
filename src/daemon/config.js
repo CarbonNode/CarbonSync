@@ -23,6 +23,8 @@ class Config {
       deviceName: os.hostname(),
       apiKey: '',
       port: 21547,
+      hubAddress: '',      // "ip:port" of hub — empty = I am the hub
+      hubApiKey: '',        // API key of the hub
       folders: [],
       ignorePatterns: [],
       settings: {
@@ -103,10 +105,19 @@ class Config {
   get port() { return this.data.port; }
   get folders() { return this.data.folders; }
   get settings() { return this.data.settings; }
+  get hubAddress() { return this.data.hubAddress || ''; }
+  get hubApiKey() { return this.data.hubApiKey || ''; }
+  get isHub() { return !this.data.hubAddress; }
+
+  setHubConnection(address, apiKey) {
+    this.data.hubAddress = address || '';
+    this.data.hubApiKey = apiKey || '';
+    this.save();
+  }
 
   // ---- Folder management ----
 
-  addFolder(folderPath, name) {
+  addFolder(folderPath, name, direction) {
     const resolved = path.resolve(folderPath);
     if (!fs.existsSync(resolved)) {
       throw new Error(`Folder does not exist: ${resolved}`);
@@ -118,10 +129,20 @@ class Config {
       path: resolved,
       name: name || path.basename(resolved),
       ignorePatterns: [],
-      excludes: [],  // Per-folder exclude patterns (applied everywhere)
+      excludes: [],
+      direction: direction || 'both', // 'push' | 'receive' | 'both'
       enabled: true,
     });
     this.save();
+  }
+
+  setFolderDirection(folderPath, direction) {
+    if (!['push', 'receive', 'both'].includes(direction)) return;
+    const folder = this.data.folders.find(f => f.path === path.resolve(folderPath));
+    if (folder) {
+      folder.direction = direction;
+      this.save();
+    }
   }
 
   /**

@@ -6,7 +6,7 @@
 const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, dialog } = require('electron');
 const path = require('path');
 const os = require('os');
-const { CarbonSyncServer } = require('../daemon/server');
+const { CarbonSyncDevice } = require('../daemon/device');
 const { getLatestRelease, downloadInstaller, installAndRestart } = require('../daemon/updater');
 
 app.name = 'CarbonSync';
@@ -175,6 +175,18 @@ function setupIPC() {
   ipcMain.handle('window-minimize', () => mainWindow?.minimize());
   ipcMain.handle('window-close', () => mainWindow?.hide());
 
+  ipcMain.handle('set-hub-connection', (_, address, apiKey) => {
+    server.config.setHubConnection(address, apiKey);
+    server.reconnectHub();
+    return server.getStatus();
+  });
+
+  ipcMain.handle('set-folder-direction', (_, folderName, direction) => {
+    const folder = server.config.folders.find(f => f.name === folderName);
+    if (folder) server.config.setFolderDirection(folder.path, direction);
+    return server.getStatus();
+  });
+
   ipcMain.handle('set-device-name', (_, name) => {
     if (name && server?.config) {
       server.config.setDeviceName(name.trim());
@@ -304,6 +316,10 @@ function setupIPC() {
     return result.filePaths[0];
   });
 
+  ipcMain.handle('get-backup-files', async (_, gameId, backupDir) => {
+    return server?.gameSaveManager?.getBackupFiles(gameId, backupDir) || [];
+  });
+
   ipcMain.handle('check-update', async () => {
     try {
       return await getLatestRelease();
@@ -338,7 +354,7 @@ function setupIPC() {
 
 app.on('ready', async () => {
   // Start daemon
-  server = new CarbonSyncServer(configDir);
+  server = new CarbonSyncDevice(configDir);
 
   server.on('ready', () => updateTrayMenu());
   server.on('client-connected', (info) => {

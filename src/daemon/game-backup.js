@@ -296,6 +296,9 @@ class GameBackup {
       throw new Error(`Backup not found: ${backupTimestamp}`);
     }
 
+    // Safety: snapshot current game state BEFORE overwriting
+    await this._snapshotBeforeRestore(gameName, gameMeta, dir);
+
     // Copy backup contents to the original save location
     await fsp.mkdir(saveBase, { recursive: true });
     const result = await this._restoreDir(backupDir, saveBase);
@@ -325,9 +328,92 @@ class GameBackup {
       throw new Error(`No current save found for ${gameName}`);
     }
 
+    // Safety: snapshot current game state BEFORE overwriting
+    await this._snapshotBeforeRestore(gameName, gameMeta, dir);
+
     await fsp.mkdir(saveBase, { recursive: true });
     const result = await this._restoreDir(currentDir, saveBase);
     return { restoredFiles: result.fileCount };
+  }
+
+  /**
+   * Before restoring, snapshot the current game saves so nothing is ever lost.
+   * Tagged as "pre-restore" in metadata so the user can identify it.
+   */
+  async _snapshotBeforeRestore(gameName, gameMeta, gameDir) {
+    const saveBase = gameMeta.saveBase;
+    if (!saveBase || !fs.existsSync(saveBase)) return;
+
+    const backupsDir = path.join(gameDir, 'backups');
+    await fsp.mkdir(backupsDir, { recursive: true });
+
+    const timestamp = 'pre-restore-' + new Date().toISOString().replace(/[:.]/g, '-');
+    const snapshotDir = path.join(backupsDir, timestamp);
+    await fsp.mkdir(snapshotDir, { recursive: true });
+
+    try {
+      // Copy current game directory into the snapshot
+      const result = await this._copyDirSingle(saveBase, snapshotDir);
+      if (result.fileCount === 0) {
+        await fsp.rm(snapshotDir, { recursive: true });
+        return;
+      }
+
+      // Write metadata
+      await fsp.writeFile(path.join(snapshotDir, '_meta.json'), JSON.stringify({
+        gameId: gameMeta.id,
+        gameName,
+        sourceDevice: require('os').hostname(),
+        timestamp: new Date().toISOString(),
+        fileCount: result.fileCount,
+        totalSize: result.totalSize,
+        preRestore: true,
+      }, null, 2));
+
+      console.log(`Pre-restore snapshot: ${gameName} (${result.fileCount} files)`);
+    } catch (err) {
+      console.error(`Pre-restore snapshot failed for ${gameName}: ${err.message}`);
+      // Non-fatal — proceed with restore anyway
+    }
+  }
+
+  /**
+   * Copy a directory to a single destination (used for pre-restore snapshots).
+   */
+  async _copyDirSingle(src, dest) {
+    let fileCount = 0;
+    let totalSize = 0;
+
+    let entries;
+    try {
+      entries = await fsp.readdir(src, { withFileTypes: true });
+    } catch { return { fileCount, totalSize }; }
+
+    for (const entry of entries) {
+      if (entry.name.startsWith('_meta') || entry.name.endsWith('.tmp')) continue;
+      const srcPath = path.join(src, entry.name);
+      const destPath = path.join(dest, entry.name);
+
+      if (entry.isDirectory()) {
+        await fsp.mkdir(destPath, { recursive: true });
+        const sub = await this._copyDirSingle(srcPath, destPath);
+        fileCount += sub.fileCount;
+        totalSize += sub.totalSize;
+      } else if (entry.isFile()) {
+        try {
+          const stat = await fsp.stat(srcPath);
+          await fsp.copyFile(srcPath, destPath);
+          try { await fsp.utimes(destPath, stat.atime, stat.mtime); } catch {}
+          fileCount++;
+          totalSize += stat.size;
+        } catch (err) {
+          if (err.code !== 'EBUSY' && err.code !== 'EACCES' && err.code !== 'ENOENT') {
+            console.error(`Snapshot copy failed: ${srcPath}: ${err.message}`);
+          }
+        }
+      }
+    }
+    return { fileCount, totalSize };
   }
 
   async _restoreDir(src, dest) {
@@ -416,6 +502,39 @@ class GameBackup {
     }
 
     return games;
+  }
+
+  /**
+   * List files inside a specific backup version.
+   * Returns [{ path, size }] with paths relative to the backup root.
+   */
+  async listBackupFiles(gameName, backupDirName) {
+    const dir = this.gameDir(gameName);
+    const backupDir = path.join(dir, 'backups', backupDirName);
+    if (!fs.existsSync(backupDir)) return [];
+
+    const files = [];
+    await this._walkFiles(backupDir, '', files);
+    return files;
+  }
+
+  async _walkFiles(dir, prefix, results) {
+    let entries;
+    try { entries = await fsp.readdir(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      if (entry.name === '_meta.json') continue;
+      const relPath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        await this._walkFiles(path.join(dir, entry.name), relPath, results);
+      } else if (entry.isFile()) {
+        try {
+          const stat = await fsp.stat(path.join(dir, entry.name));
+          results.push({ path: relPath, size: stat.size });
+        } catch {
+          results.push({ path: relPath, size: 0 });
+        }
+      }
+    }
   }
 
   /**

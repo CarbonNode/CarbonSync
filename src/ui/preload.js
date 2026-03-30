@@ -13,6 +13,8 @@ contextBridge.exposeInMainWorld('carbonsync', {
   setFolderExcludes: (folder, excludes) => ipcRenderer.invoke('set-folder-excludes', folder, excludes),
   getFolderExcludes: (folder) => ipcRenderer.invoke('get-folder-excludes', folder),
   addPeer: (ip, port) => ipcRenderer.invoke('add-peer', ip, port),
+  setHubConnection: (addr, key) => ipcRenderer.invoke('set-hub-connection', addr, key),
+  setFolderDirection: (folder, dir) => ipcRenderer.invoke('set-folder-direction', folder, dir),
   checkUpdate: () => ipcRenderer.invoke('check-update'),
   downloadUpdate: () => ipcRenderer.invoke('download-update'),
 
@@ -32,6 +34,7 @@ contextBridge.exposeInMainWorld('carbonsync', {
   dismissGame: (gameId) => ipcRenderer.invoke('dismiss-game', gameId),
   backupGameNow: (gameId) => ipcRenderer.invoke('backup-game-now', gameId),
   pickGameFolder: () => ipcRenderer.invoke('pick-game-folder'),
+  getBackupFiles: (gameId, dir) => ipcRenderer.invoke('get-backup-files', gameId, dir),
 
   onStatusUpdate: (cb) => {
     ipcRenderer.on('status-update', (_, data) => { try { cb(data); } catch {} });

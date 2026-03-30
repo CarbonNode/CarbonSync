@@ -460,6 +460,16 @@ class GameSaveManager extends EventEmitter {
   /**
    * Force backup a specific game now.
    */
+  /**
+   * List files inside a specific backup version.
+   */
+  async getBackupFiles(gameId, backupDir) {
+    const entry = this._library.get(gameId);
+    if (!entry) return [];
+    const displayName = this._getDisplayName(entry);
+    return this.backup.listBackupFiles(displayName, backupDir);
+  }
+
   async backupNow(gameId) {
     const entry = this._library.get(gameId);
     if (!entry) throw new Error(`Unknown game: ${gameId}`);

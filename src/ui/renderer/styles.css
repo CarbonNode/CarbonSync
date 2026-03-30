@@ -284,6 +284,13 @@ body {
 .toast.info { border-color: var(--accent); }
 @keyframes toastIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
 
+/* ---- Direction selector ---- */
+.direction-select {
+  background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+  color: var(--text); font-size: 11px; padding: 3px 6px; cursor: pointer; outline: none;
+}
+.direction-select:focus { border-color: var(--accent); }
+
 /* ---- Device sync icons on folder cards ---- */
 .device-row { display: flex; gap: 12px; margin-top: 6px; flex-wrap: wrap; }
 .device-icon { font-size: 11px; color: var(--text-dim); cursor: default; }
@@ -445,4 +452,75 @@ body {
   font-size: 10px; padding: 1px 6px; border-radius: 3px;
   background: #1e3a5f; color: var(--accent);
   font-weight: 600;
+}
+
+/* Scan dirs panel */
+.scan-dirs-panel {
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+}
+.scan-dirs-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+  font-size: 11px; color: var(--text-dim);
+  text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600;
+}
+.scan-dirs-chevron {
+  color: var(--text-dim); flex-shrink: 0;
+  transition: transform 0.2s;
+}
+.scan-dirs-chevron.expanded { transform: rotate(90deg); }
+.scan-dirs-body { padding: 0 12px 10px 12px; }
+.scan-dir-row {
+  display: flex; align-items: center; gap: 10px;
+  padding: 4px 0;
+}
+.scan-dir-label { font-size: 12px; color: var(--text); }
+
+.games-toolbar-left { display: flex; align-items: center; gap: 12px; }
+.games-scan-status { font-size: 11px; }
+
+/* Save entry wrapper */
+.save-entry { }
+.save-entry.pre-restore { opacity: 0.7; }
+
+/* Save file chevron */
+.save-chevron {
+  color: var(--text-dim);
+  transition: transform 0.2s;
+}
+.save-chevron.expanded { transform: rotate(90deg); }
+
+/* Save file list */
+.save-files {
+  padding: 4px 0 6px 24px;
+}
+.save-file-row {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 2px 0;
+  font-size: 11px;
+}
+.save-file-name {
+  font-family: 'Consolas', monospace;
+  color: var(--text-dim);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  flex: 1;
+}
+.save-file-size {
+  color: #444; font-size: 10px;
+  flex-shrink: 0; margin-left: 12px;
+}
+.save-files-loading, .save-files-empty {
+  font-size: 11px; color: #444; font-style: italic;
+}
+
+.save-row.pre-restore { opacity: 0.7; }
+.save-safety-tag {
+  font-size: 9px; padding: 1px 5px; border-radius: 3px;
+  background: #3d2e00; color: var(--yellow);
+  font-weight: 700; letter-spacing: 0.3px;
+  white-space: nowrap;
 }
