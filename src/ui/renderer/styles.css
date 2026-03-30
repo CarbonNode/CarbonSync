@@ -125,9 +125,9 @@ body {
 
 /* ---- Floating Action Button ---- */
 .fab {
-  position: absolute;
-  bottom: 16px;
-  right: 20px;
+  position: fixed;
+  bottom: 20px;
+  right: 24px;
   width: 44px;
   height: 44px;
   border-radius: 50%;

@@ -135,6 +135,9 @@ class GameSaveManager extends EventEmitter {
 
     // Auto-restore any saves that are newer from sync (initial check)
     setTimeout(() => this.autoRestoreAll(), 5000);
+
+    // Periodic check for synced games (catches anything the watcher missed)
+    this._syncCheckInterval = setInterval(() => this._syncLibraryFromBackups(), 30000);
   }
 
   async _autoScan() {

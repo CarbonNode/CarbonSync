@@ -209,8 +209,9 @@ class CarbonSyncDevice extends EventEmitter {
 
         // Auto-register game-saves folder for sync (direction: both, hidden from Folders tab)
         const gameSavesDir = path.join(this.configDir, 'game-saves');
+        fs.mkdirSync(gameSavesDir, { recursive: true }); // Ensure it exists on fresh installs
         const alreadySynced = this.config.folders.some(f => path.resolve(f.path) === path.resolve(gameSavesDir));
-        if (!alreadySynced && fs.existsSync(gameSavesDir)) {
+        if (!alreadySynced) {
           try {
             this.config.data.folders.push({
               path: path.resolve(gameSavesDir),
