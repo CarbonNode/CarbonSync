@@ -167,7 +167,7 @@ function toggleGroup(name) {
 }
 
 function setGroupPrompt(folderPath) {
-  const el = document.querySelector(`.folder-card[data-path="${folderPath}"] .folder-name span`);
+  const el = document.querySelector(`.folder-card[data-path="${CSS.escape(folderPath)}"] .folder-name span`);
   if (!el) return;
 
   const input = document.createElement('input');
@@ -325,37 +325,35 @@ function setupFolderActions() {
 }
 
 function renameFolder(folderPath, currentName) {
-  // Inline rename like peer rename
-  const cards = document.querySelectorAll('.folder-card .folder-name span');
-  for (const nameEl of cards) {
-    if (nameEl.textContent === currentName) {
-      const input = document.createElement('input');
-      input.type = 'text';
-      input.value = currentName;
-      input.style.cssText = 'background:var(--bg);border:1px solid var(--accent);border-radius:4px;padding:3px 8px;color:var(--text);font-size:13px;width:200px;outline:none;';
-      nameEl.replaceWith(input);
-      input.focus();
-      input.select();
+  // Find the specific card by path, not name (handles duplicate names)
+  const card = document.querySelector(`.folder-card[data-path="${CSS.escape(folderPath)}"]`);
+  const nameEl = card?.querySelector('.folder-name span');
+  if (nameEl) {
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = currentName;
+    input.style.cssText = 'background:var(--bg);border:1px solid var(--accent);border-radius:4px;padding:3px 8px;color:var(--text);font-size:13px;width:200px;outline:none;';
+    nameEl.replaceWith(input);
+    input.focus();
+    input.select();
 
-      let saved = false;
-      const save = async () => {
-        if (saved) return;
-        saved = true;
-        const newName = input.value.trim();
-        if (newName && newName !== currentName) {
-          await api.renameFolder(folderPath, newName);
-          toast(`Renamed to: ${newName}`, 'success');
-        }
-        refresh();
-      };
+    let saved = false;
+    const save = async () => {
+      if (saved) return;
+      saved = true;
+      const newName = input.value.trim();
+      if (newName && newName !== currentName) {
+        await api.renameFolder(folderPath, newName);
+        toast(`Renamed to: ${newName}`, 'success');
+      }
+      refresh();
+    };
 
-      input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') { e.preventDefault(); save(); }
-        if (e.key === 'Escape') { saved = true; refresh(); }
-      });
-      input.addEventListener('blur', save);
-      break;
-    }
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); save(); }
+      if (e.key === 'Escape') { saved = true; refresh(); }
+    });
+    input.addEventListener('blur', save);
   }
 }
 

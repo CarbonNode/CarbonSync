@@ -211,7 +211,7 @@ class GameBackup {
       if (n.startsWith('_meta') || nl.endsWith('.tmp') || nl.endsWith('.partial')) continue;
       if (nl === 'player.log' || nl === 'player-prev.log' || nl === 'output_log.txt') continue;
       if (nl === 'steam_autocloud.vdf' || nl === 'eventcache') continue;
-      if (nl.endsWith('.log')) continue;
+      if (nl === 'crash.dmp' || nl === 'error.log' || nl === 'debug.log') continue;
       if (n === 'Unity' || n === 'ShaderCache') {
         // Skip Unity analytics/shader dirs entirely
         continue;
