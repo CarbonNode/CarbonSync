@@ -84,7 +84,7 @@ class Scanner {
 
     const scanId = Date.now();
     const stats = { added: 0, modified: 0, deleted: 0, unchanged: 0, errors: 0, total: 0 };
-    const BATCH_SIZE = 100; // Smaller batches = shorter UI blocks
+    const BATCH_SIZE = 100;
 
     try {
       try {
@@ -93,6 +93,22 @@ class Scanner {
         console.error(`Scan aborted: folder inaccessible: ${this.folderPath}`);
         this._stale = true;
         return { ...stats, error: 'Folder inaccessible' };
+      }
+
+      // Quick check: if we already have entries and folder hasn't been modified
+      // since last scan, skip the full scan entirely (watcher handles changes)
+      if (!opts.force) {
+        const lastScanRow = this._stmtGetMeta.get('last_scan');
+        const fileCount = this.getFileCount();
+        if (lastScanRow && fileCount > 0) {
+          const lastScan = parseInt(lastScanRow.value);
+          // If last scan was less than 60 seconds ago, skip
+          if (Date.now() - lastScan < 60000) {
+            console.log(`Skipping scan for ${this.folderPath} — scanned ${Math.round((Date.now() - lastScan) / 1000)}s ago`);
+            this._scanning = false;
+            return { ...stats, unchanged: fileCount, skippedQuick: true };
+          }
+        }
       }
 
       const files = await this._walkDir(this.folderPath);

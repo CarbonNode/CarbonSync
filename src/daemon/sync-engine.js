@@ -165,21 +165,33 @@ class SyncEngine extends EventEmitter {
   }
 
   _handleWatchEvents(folderName, folder, events) {
+    // Debounce: collect events, process after 500ms of quiet
+    if (!folder._pendingEvents) folder._pendingEvents = [];
+    folder._pendingEvents.push(...events);
+
+    if (folder._watchDebounce) clearTimeout(folder._watchDebounce);
+    folder._watchDebounce = setTimeout(() => {
+      const batch = folder._pendingEvents;
+      folder._pendingEvents = [];
+      this._processWatchBatch(folderName, folder, batch);
+    }, 500);
+  }
+
+  async _processWatchBatch(folderName, folder, events) {
     const changes = [];
 
     for (const event of events) {
       const relPath = path.relative(folder.path, event.path).replace(/\\/g, '/');
 
-      // Skip ignored files
       if (relPath.startsWith('.carbonsync/') || relPath.includes('/.carbonsync/')) continue;
       if (relPath.endsWith('.tmp') || relPath.endsWith('.partial')) continue;
+      if (relPath.endsWith('Thumbs.db') || relPath.endsWith('desktop.ini')) continue;
 
       if (event.type === 'delete') {
         folder.scanner.removeFile(event.path);
         changes.push({ type: 'delete', path: relPath });
       } else {
-        // create or update
-        const entry = folder.scanner.updateFile(event.path);
+        const entry = await folder.scanner.updateFile(event.path);
         if (entry) {
           changes.push({ type: event.type === 'create' ? 'add' : 'modify', ...entry });
         }
@@ -341,6 +353,7 @@ class SyncEngine extends EventEmitter {
    */
   async stop() {
     for (const [name, folder] of this.folders) {
+      if (folder._watchDebounce) clearTimeout(folder._watchDebounce);
       if (folder.pollInterval) {
         clearInterval(folder.pollInterval);
         folder.pollInterval = null;
