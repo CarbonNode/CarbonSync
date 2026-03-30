@@ -60,10 +60,10 @@ function createWindow() {
   const primary = screen.getPrimaryDisplay();
 
   mainWindow = new BrowserWindow({
-    width: 800, height: 520,
-    x: primary.bounds.x + Math.round((primary.bounds.width - 800) / 2),
-    y: primary.bounds.y + Math.round((primary.bounds.height - 520) / 2),
-    minWidth: 600, minHeight: 400,
+    width: 1000, height: 700,
+    x: primary.bounds.x + Math.round((primary.bounds.width - 1000) / 2),
+    y: primary.bounds.y + Math.round((primary.bounds.height - 700) / 2),
+    minWidth: 700, minHeight: 500,
     frame: false, show: true,
     title: 'CarbonSync',
     icon: iconPath,

@@ -55,7 +55,7 @@ function ensureCerts(configDir) {
     let opensslBin = null;
     for (const p of opensslPaths) {
       try {
-        execFileSync(p, ['version'], { timeout: 5000, stdio: 'pipe' });
+        execFileSync(p, ['version'], { timeout: 5000, stdio: 'pipe', windowsHide: true });
         opensslBin = p;
         break;
       } catch {}
@@ -67,7 +67,7 @@ function ensureCerts(configDir) {
         'req', '-new', '-x509', '-key', keyPath,
         '-out', certPath, '-days', '3650',
         '-subj', '/CN=CarbonSync/O=CarbonSync',
-      ], { timeout: 10000, stdio: 'pipe' });
+      ], { timeout: 10000, stdio: 'pipe', windowsHide: true });
 
       cert = fs.readFileSync(certPath);
     }

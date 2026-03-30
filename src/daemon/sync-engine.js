@@ -90,8 +90,13 @@ class SyncEngine extends EventEmitter {
       const stats = await folder.scanner.fullScan();
       console.log(`Scan complete: ${name} — ${stats.added} added, ${stats.modified} modified, ${stats.deleted} deleted, ${stats.unchanged} unchanged, ${stats.errors} errors`);
 
+      // Yield to event loop between folders so UI stays responsive
+      await new Promise(r => setImmediate(r));
+
       // Start live watcher with fallback to polling
       await this._startWatcher(name, folder);
+
+      await new Promise(r => setImmediate(r));
     }
 
     this.state = SYNC_STATE.IDLE;
