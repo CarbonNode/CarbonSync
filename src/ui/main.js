@@ -148,7 +148,9 @@ function setupIPC() {
   ipcMain.handle('add-folder', async (_, folderPath, name) => {
     await server.addFolder(folderPath, name);
     updateTrayMenu();
-    return server.getStatus();
+    const status = server.getStatus();
+    sendToUI('status-update', status);
+    return status;
   });
 
   ipcMain.handle('remove-folder', (_, folderPath) => {
@@ -207,6 +209,49 @@ function setupIPC() {
     server.config.setHubConnection(address, apiKey);
     server.reconnectHub();
     return server.getStatus();
+  });
+
+  ipcMain.handle('rename-folder', (_, folderPath, newName) => {
+    server.config.renameFolder(folderPath, newName);
+    if (server.transport) {
+      server.transport.broadcast({ type: 'folder_renamed', path: folderPath, name: newName });
+    }
+    sendToUI('status-update', server.getStatus());
+    return server.getStatus();
+  });
+
+  ipcMain.handle('set-folder-icon', async (_, folderPath) => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openFile'],
+      title: 'Choose folder icon',
+      filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'ico', 'svg', 'webp'] }],
+    });
+    if (result.canceled || !result.filePaths[0]) return null;
+
+    const src = result.filePaths[0];
+    const ext = require('path').extname(src);
+    const folder = server.config.folders.find(f => f.path === require('path').resolve(folderPath));
+    if (!folder) return null;
+
+    // Copy icon to config dir
+    const iconDir = require('path').join(server.configDir, 'folder-icons');
+    require('fs').mkdirSync(iconDir, { recursive: true });
+    const destName = folder.name.replace(/[^a-zA-Z0-9]/g, '_') + ext;
+    const dest = require('path').join(iconDir, destName);
+    require('fs').copyFileSync(src, dest);
+
+    // Save path in config
+    folder.icon = dest;
+    server.config.save();
+
+    // Broadcast to peers
+    if (server.transport) {
+      const iconData = require('fs').readFileSync(dest).toString('base64');
+      server.transport.broadcast({ type: 'folder_icon', path: folderPath, name: folder.name, iconBase64: iconData, ext });
+    }
+
+    sendToUI('status-update', server.getStatus());
+    return dest;
   });
 
   ipcMain.handle('set-folder-direction', (_, folderName, direction) => {

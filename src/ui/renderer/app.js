@@ -93,10 +93,17 @@ function renderFolders(folders) {
       }
     }
 
+    const iconHtml = f.icon ? `<img src="file:///${f.icon.replace(/\\\\/g, '/')}" class="folder-icon-img">` : '';
+
     return `<div class="folder-card">
       <div class="folder-header">
+        ${iconHtml}
         <div class="folder-info">
-          <div class="folder-name">${esc(f.name)}</div>
+          <div class="folder-name">
+            <span>${esc(f.name)}</span>
+            <button class="btn sm ghost" onclick="renameFolder('${escA(f.folderPath || f.path)}', '${escA(f.name)}')" title="Rename">Rename</button>
+            <button class="btn sm ghost" onclick="setFolderIcon('${escA(f.folderPath || f.path)}')" title="Set icon">Icon</button>
+          </div>
           <div class="folder-path">${esc(f.path)}</div>
           <div class="folder-meta">
             <span><strong>${(f.fileCount || 0).toLocaleString()}</strong> files</span>
@@ -241,6 +248,49 @@ function setupFolderActions() {
   document.getElementById('folder-settings-popup').addEventListener('click', (e) => {
     if (e.target === e.currentTarget) closePopup();
   });
+}
+
+function renameFolder(folderPath, currentName) {
+  // Inline rename like peer rename
+  const cards = document.querySelectorAll('.folder-card .folder-name span');
+  for (const nameEl of cards) {
+    if (nameEl.textContent === currentName) {
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = currentName;
+      input.style.cssText = 'background:var(--bg);border:1px solid var(--accent);border-radius:4px;padding:3px 8px;color:var(--text);font-size:13px;width:200px;outline:none;';
+      nameEl.replaceWith(input);
+      input.focus();
+      input.select();
+
+      let saved = false;
+      const save = async () => {
+        if (saved) return;
+        saved = true;
+        const newName = input.value.trim();
+        if (newName && newName !== currentName) {
+          await api.renameFolder(folderPath, newName);
+          toast(`Renamed to: ${newName}`, 'success');
+        }
+        refresh();
+      };
+
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); save(); }
+        if (e.key === 'Escape') { saved = true; refresh(); }
+      });
+      input.addEventListener('blur', save);
+      break;
+    }
+  }
+}
+
+async function setFolderIcon(folderPath) {
+  const result = await api.setFolderIcon(folderPath);
+  if (result) {
+    toast('Icon set', 'success');
+    refresh();
+  }
 }
 
 async function setDirection(folderName, direction) {

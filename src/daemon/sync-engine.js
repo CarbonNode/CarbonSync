@@ -52,9 +52,16 @@ class SyncEngine extends EventEmitter {
       },
     });
 
-    this.folders.set(name, {
+    // Ensure unique name (append path hash if duplicate)
+    let uniqueName = name;
+    if (this.folders.has(name)) {
+      const hash = require('crypto').createHash('md5').update(folder.path).digest('hex').substring(0, 6);
+      uniqueName = `${name}_${hash}`;
+    }
+
+    this.folders.set(uniqueName, {
       path: folder.path,
-      name,
+      name: uniqueName,
       scanner,
       watcher: null,
       state: SYNC_STATE.IDLE,

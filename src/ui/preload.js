@@ -17,6 +17,8 @@ contextBridge.exposeInMainWorld('carbonsync', {
   approvePeer: (clientId, folders) => ipcRenderer.invoke('approve-peer', clientId, folders),
   rejectPeer: (clientId) => ipcRenderer.invoke('reject-peer', clientId),
   setHubConnection: (addr, key) => ipcRenderer.invoke('set-hub-connection', addr, key),
+  renameFolder: (path, name) => ipcRenderer.invoke('rename-folder', path, name),
+  setFolderIcon: (path) => ipcRenderer.invoke('set-folder-icon', path),
   setFolderDirection: (folder, dir) => ipcRenderer.invoke('set-folder-direction', folder, dir),
   checkUpdate: () => ipcRenderer.invoke('check-update'),
   downloadUpdate: () => ipcRenderer.invoke('download-update'),

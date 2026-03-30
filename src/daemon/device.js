@@ -265,10 +265,26 @@ class CarbonSyncDevice extends EventEmitter {
       } else if (msg.type === MSG.FOLDER_LIST) {
         this.emit('hub-folders', msg.folders);
       } else if (msg.type === 'set_device_name') {
-        // Hub renamed us
         console.log(`Hub renamed this device to: ${msg.name}`);
         this.config.setDeviceName(msg.name);
         this.emit('device-renamed', msg.name);
+      } else if (msg.type === 'folder_renamed') {
+        const folder = this.config.folders.find(f => f.path === msg.path);
+        if (folder) {
+          folder.name = msg.name;
+          this.config.save();
+          this.emit('folder-renamed', msg);
+        }
+      } else if (msg.type === 'folder_icon') {
+        if (msg.iconBase64 && msg.name) {
+          const iconDir = path.join(this.configDir, 'folder-icons');
+          fs.mkdirSync(iconDir, { recursive: true });
+          const destName = msg.name.replace(/[^a-zA-Z0-9]/g, '_') + (msg.ext || '.png');
+          const dest = path.join(iconDir, destName);
+          fs.writeFileSync(dest, Buffer.from(msg.iconBase64, 'base64'));
+          const folder = this.config.folders.find(f => f.name === msg.name);
+          if (folder) { folder.icon = dest; this.config.save(); }
+        }
       }
     });
 
@@ -1280,6 +1296,8 @@ class CarbonSyncDevice extends EventEmitter {
         const cfgFolder = this.config.folders.find(f => f.name === name);
         info.excludes = cfgFolder?.excludes || [];
         info.direction = cfgFolder?.direction || 'both';
+        info.icon = cfgFolder?.icon || null;
+        info.folderPath = cfgFolder?.path || '';
         info.internal = cfgFolder?.internal || false;
 
         info.devices = {};

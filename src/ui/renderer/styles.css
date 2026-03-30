@@ -123,7 +123,29 @@ body {
 .btn.ghost { background: transparent; border: 1px solid var(--border); color: var(--text-dim); }
 .btn.ghost:hover { border-color: var(--accent); color: var(--text); }
 
-.tab-actions { margin-top: 12px; }
+/* ---- Floating Action Button ---- */
+.fab {
+  position: absolute;
+  bottom: 16px;
+  right: 20px;
+  width: 44px;
+  height: 44px;
+  border-radius: 50%;
+  background: var(--green);
+  color: white;
+  border: none;
+  font-size: 24px;
+  font-weight: 300;
+  cursor: pointer;
+  box-shadow: 0 4px 12px rgba(0,0,0,0.4);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s, transform 0.15s;
+  z-index: 10;
+  line-height: 1;
+}
+.fab:hover { background: #16a34a; transform: scale(1.1); }
 
 /* ---- Folder Cards ---- */
 .folder-card {
@@ -303,6 +325,12 @@ body {
   color: var(--text); font-size: 11px; padding: 3px 6px; cursor: pointer; outline: none;
 }
 .direction-select:focus { border-color: var(--accent); }
+
+/* ---- Folder icon ---- */
+.folder-icon-img {
+  width: 40px; height: 40px; border-radius: 6px; object-fit: cover;
+  flex-shrink: 0; margin-right: 10px;
+}
 
 /* ---- Device sync icons on folder cards ---- */
 .device-row { display: flex; gap: 12px; margin-top: 6px; flex-wrap: wrap; }
