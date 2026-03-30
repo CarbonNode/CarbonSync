@@ -261,21 +261,20 @@ function renderActivity() {
 
 function mergeDeviceLists(s) {
   const byIp = new Map();
+  const connectedIPs = new Set();
 
-  // Add discovered devices (mDNS)
-  for (const d of (s.discoveredDevices || [])) {
-    if (d.ip) byIp.set(d.ip, { ...d, source: 'discovered' });
-  }
-
-  // Add connected peers (active connections) — override discovered
+  // Add connected peers first (highest priority)
   for (const p of (s.connectedPeers || [])) {
-    const existing = byIp.get(p.ip) || {};
-    byIp.set(p.ip, { ...existing, ...p, source: 'connected' });
+    if (p.ip) {
+      connectedIPs.add(p.ip);
+      byIp.set(p.ip, { ...p, source: 'connected' });
+    }
   }
 
-  // Add saved peers (auto-reconnect list) — don't override connected
+  // Add saved peers (if not already connected)
   for (const p of (s.savedPeers || [])) {
-    if (!byIp.has(p.ip)) {
+    if (p.ip && !byIp.has(p.ip)) {
+      connectedIPs.add(p.ip);
       byIp.set(p.ip, {
         ip: p.ip,
         port: p.port,
@@ -283,6 +282,13 @@ function mergeDeviceLists(s) {
         friendlyName: p.deviceName || p.ip,
         source: 'saved',
       });
+    }
+  }
+
+  // Add discovered devices (only if not already connected/saved)
+  for (const d of (s.discoveredDevices || [])) {
+    if (d.ip && !connectedIPs.has(d.ip)) {
+      byIp.set(d.ip, { ...d, source: 'discovered' });
     }
   }
 

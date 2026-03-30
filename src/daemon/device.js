@@ -505,7 +505,16 @@ class CarbonSyncDevice extends EventEmitter {
   getConnectedPeers() {
     const peers = [];
     for (const [key, info] of this.peerConnections) {
-      peers.push({ address: key, deviceName: info.deviceName, connected: info.connected });
+      const [ip, portStr] = key.split(':');
+      peers.push({
+        address: key,
+        ip,
+        port: parseInt(portStr) || this.config.port,
+        hostname: info.deviceName || ip,
+        friendlyName: info.deviceName || ip,
+        deviceName: info.deviceName,
+        connected: info.connected,
+      });
     }
     return peers;
   }
