@@ -29,7 +29,15 @@ class Config {
         scanIntervalMinutes: 5,
         maxConcurrentTransfers: 4,
         bandwidthLimitMBps: 0, // 0 = unlimited
+        gameSaveEnabled: true,
+        gameSaveMaxVersions: 10,
+        gameSaveAutoRestore: false,
+        gameSaveScanDirs: ['documents', 'appdata_roaming', 'appdata_local', 'appdata_locallow'],
       },
+      gameSaveCustomGames: [],
+      gameSaveBlockedGames: [],
+      gameSaveConfirmedGames: [],
+      gameSaveGameOverrides: {},
     };
 
     this.load();

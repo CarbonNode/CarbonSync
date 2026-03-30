@@ -6,10 +6,49 @@
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
-const { minimatch } = require('minimatch');
 
 const BUNDLED_DB_PATH = path.join(__dirname, '..', 'data', 'game-db.json');
 const BLOCKLIST_PATH = path.join(__dirname, '..', 'data', 'blocklist.json');
+
+/**
+ * Simple glob matcher for patterns like **\/Cache\/**, *.log, etc.
+ * Supports: ** (any path segment), * (any chars in segment), ? (single char).
+ */
+function matchGlob(filePath, pattern) {
+  const normalized = filePath.replace(/\\/g, '/').toLowerCase();
+  const pat = pattern.replace(/\\/g, '/').toLowerCase();
+
+  // Fast path: **/X/** — check if /X/ appears anywhere in the path
+  const doubleStar = pat.match(/^\*\*\/(.+)\/\*\*$/);
+  if (doubleStar) {
+    return normalized.includes('/' + doubleStar[1] + '/') || normalized.startsWith(doubleStar[1] + '/');
+  }
+
+  // Fast path: **/*.ext — check extension
+  const extMatch = pat.match(/^\*\*\/\*(\.[a-z0-9]+)$/);
+  if (extMatch) {
+    return normalized.endsWith(extMatch[1]);
+  }
+
+  // Fast path: **/filename — check basename
+  const baseMatch = pat.match(/^\*\*\/([^*?]+)$/);
+  if (baseMatch) {
+    return normalized.endsWith('/' + baseMatch[1]) || normalized === baseMatch[1];
+  }
+
+  // Convert glob to regex for complex patterns
+  const regex = pat
+    .replace(/\*\*/g, '\0')
+    .replace(/\*/g, '[^/]*')
+    .replace(/\?/g, '[^/]')
+    .replace(/\0/g, '.*')
+    .replace(/\./g, '\\.');
+  try {
+    return new RegExp('^' + regex + '$', 'i').test(normalized);
+  } catch {
+    return false;
+  }
+}
 
 // Save-like file extensions for heuristic detection
 const SAVE_EXTENSIONS = new Set([
@@ -153,7 +192,7 @@ class GameDB {
 
     // Check pattern blocklist
     for (const pattern of this.blocklist.patterns) {
-      if (minimatch(relFromRoot, pattern, { dot: true, nocase: true })) {
+      if (matchGlob(relFromRoot, pattern)) {
         return true;
       }
     }
@@ -279,4 +318,4 @@ class GameDB {
   }
 }
 
-module.exports = { GameDB };
+module.exports = { GameDB, matchGlob };

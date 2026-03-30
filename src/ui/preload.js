@@ -16,6 +16,23 @@ contextBridge.exposeInMainWorld('carbonsync', {
   checkUpdate: () => ipcRenderer.invoke('check-update'),
   downloadUpdate: () => ipcRenderer.invoke('download-update'),
 
+  // Game saves
+  getGameLibrary: () => ipcRenderer.invoke('get-game-library'),
+  getSaveHistory: (gameId) => ipcRenderer.invoke('get-save-history', gameId),
+  restoreSave: (gameId, ts) => ipcRenderer.invoke('restore-save', gameId, ts),
+  restoreCurrent: (gameId) => ipcRenderer.invoke('restore-current', gameId),
+  scanGames: () => ipcRenderer.invoke('scan-games'),
+  addCustomGame: (cfg) => ipcRenderer.invoke('add-custom-game', cfg),
+  removeGame: (gameId, deleteBackups) => ipcRenderer.invoke('remove-game', gameId, deleteBackups),
+  renameGame: (gameId, name) => ipcRenderer.invoke('rename-game', gameId, name),
+  setGameExcludes: (gameId, excludes) => ipcRenderer.invoke('set-game-excludes', gameId, excludes),
+  getGameExcludes: (gameId) => ipcRenderer.invoke('get-game-excludes', gameId),
+  toggleGameSync: (gameId, enabled) => ipcRenderer.invoke('toggle-game-sync', gameId, enabled),
+  confirmGame: (gameId) => ipcRenderer.invoke('confirm-game', gameId),
+  dismissGame: (gameId) => ipcRenderer.invoke('dismiss-game', gameId),
+  backupGameNow: (gameId) => ipcRenderer.invoke('backup-game-now', gameId),
+  pickGameFolder: () => ipcRenderer.invoke('pick-game-folder'),
+
   onStatusUpdate: (cb) => {
     ipcRenderer.on('status-update', (_, data) => { try { cb(data); } catch {} });
   },

@@ -32,6 +32,7 @@
   <!-- Tabs -->
   <div class="tabs">
     <button class="tab active" data-tab="folders">Folders</button>
+    <button class="tab" data-tab="games">Games</button>
     <button class="tab" data-tab="activity">Activity</button>
     <button class="tab" data-tab="devices">Devices</button>
     <button class="tab" data-tab="settings">Settings</button>
@@ -50,6 +51,18 @@
       <div class="drop-zone" id="drop-zone">
         <div class="drop-text">Drop a folder here to sync it</div>
       </div>
+    </div>
+
+    <!-- Games Tab -->
+    <div class="tab-pane" id="tab-games">
+      <div class="games-toolbar">
+        <span class="games-count" id="games-count">0 games detected</span>
+        <div class="games-toolbar-btns">
+          <button class="btn sm ghost" id="btn-scan-games">Rescan</button>
+          <button class="btn sm" id="btn-add-game">+ Custom Game</button>
+        </div>
+      </div>
+      <div id="games-list"></div>
     </div>
 
     <!-- Activity Tab -->
@@ -148,6 +161,63 @@
           <span class="example" onclick="document.getElementById('new-exclude').value='*.tmp'">*.tmp</span>
           <span class="example" onclick="document.getElementById('new-exclude').value='__pycache__/'">__pycache__/</span>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Game Settings Popup -->
+  <div id="game-settings-popup" class="popup-overlay hidden">
+    <div class="popup-box">
+      <div class="popup-header">
+        <h3>Game Settings — <span id="game-popup-name"></span></h3>
+        <button class="btn sm ghost" id="btn-close-game-popup">&#10005;</button>
+      </div>
+      <div class="popup-body">
+        <h4>Display Name</h4>
+        <div class="exclude-add" style="margin-bottom:16px;">
+          <input type="text" id="game-rename-input" placeholder="Game display name">
+          <button class="btn sm" id="btn-game-rename">Rename</button>
+        </div>
+        <h4>Exclude Patterns</h4>
+        <p class="popup-hint">Files matching these patterns won't be backed up.</p>
+        <div id="game-excludes-list"></div>
+        <div class="exclude-add">
+          <input type="text" id="game-new-exclude" placeholder="e.g. *.log or screenshots/**">
+          <button class="btn sm" id="btn-game-add-exclude">Add</button>
+        </div>
+        <div class="popup-examples">
+          <span class="example" onclick="document.getElementById('game-new-exclude').value='*.log'">*.log</span>
+          <span class="example" onclick="document.getElementById('game-new-exclude').value='*.bak'">*.bak</span>
+          <span class="example" onclick="document.getElementById('game-new-exclude').value='screenshots/**'">screenshots/**</span>
+          <span class="example" onclick="document.getElementById('game-new-exclude').value='*.tmp'">*.tmp</span>
+        </div>
+        <div style="margin-top:16px; padding-top:16px; border-top:1px solid var(--border);">
+          <button class="btn sm red" id="btn-game-remove">Remove Game</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Add Custom Game Popup -->
+  <div id="add-game-popup" class="popup-overlay hidden">
+    <div class="popup-box">
+      <div class="popup-header">
+        <h3>Add Custom Game</h3>
+        <button class="btn sm ghost" id="btn-close-add-game">&#10005;</button>
+      </div>
+      <div class="popup-body">
+        <div class="setting-group" style="margin-bottom:12px;">
+          <label>Game Name</label>
+          <input type="text" id="custom-game-name" placeholder="e.g. My Game">
+        </div>
+        <div class="setting-group" style="margin-bottom:12px;">
+          <label>Save Folder Path</label>
+          <div class="exclude-add">
+            <input type="text" id="custom-game-path" placeholder="Select or paste the save folder path" readonly>
+            <button class="btn sm" id="btn-pick-game-folder">Browse</button>
+          </div>
+        </div>
+        <button class="btn green" id="btn-confirm-add-game">Add Game</button>
       </div>
     </div>
   </div>

@@ -239,6 +239,71 @@ function setupIPC() {
     return { success: true };
   });
 
+  // ---- Game Save IPC ----
+
+  ipcMain.handle('get-game-library', () => server?.gameSaveManager?.getLibrary() || []);
+
+  ipcMain.handle('get-save-history', async (_, gameId) => {
+    return server?.gameSaveManager?.getHistory(gameId) || [];
+  });
+
+  ipcMain.handle('restore-save', async (_, gameId, ts) => {
+    return server?.gameSaveManager?.restore(gameId, ts);
+  });
+
+  ipcMain.handle('restore-current', async (_, gameId) => {
+    return server?.gameSaveManager?.restoreCurrent(gameId);
+  });
+
+  ipcMain.handle('scan-games', async () => {
+    return server?.gameSaveManager?.scanNow();
+  });
+
+  ipcMain.handle('add-custom-game', async (_, cfg) => {
+    return server?.gameSaveManager?.addCustomGame(cfg);
+  });
+
+  ipcMain.handle('remove-game', async (_, gameId, deleteBackups) => {
+    return server?.gameSaveManager?.removeGame(gameId, deleteBackups);
+  });
+
+  ipcMain.handle('rename-game', async (_, gameId, name) => {
+    return server?.gameSaveManager?.renameGame(gameId, name);
+  });
+
+  ipcMain.handle('set-game-excludes', async (_, gameId, excludes) => {
+    return server?.gameSaveManager?.setGameExcludes(gameId, excludes);
+  });
+
+  ipcMain.handle('get-game-excludes', (_, gameId) => {
+    return server?.gameSaveManager?.getGameExcludes(gameId) || [];
+  });
+
+  ipcMain.handle('toggle-game-sync', async (_, gameId, enabled) => {
+    return server?.gameSaveManager?.toggleSync(gameId, enabled);
+  });
+
+  ipcMain.handle('confirm-game', async (_, gameId) => {
+    return server?.gameSaveManager?.confirmGame(gameId);
+  });
+
+  ipcMain.handle('dismiss-game', async (_, gameId) => {
+    return server?.gameSaveManager?.dismissGame(gameId);
+  });
+
+  ipcMain.handle('backup-game-now', async (_, gameId) => {
+    return server?.gameSaveManager?.backupNow(gameId);
+  });
+
+  ipcMain.handle('pick-game-folder', async () => {
+    const result = await dialog.showOpenDialog({
+      properties: ['openDirectory'],
+      title: 'Select game save folder',
+    });
+    if (result.canceled) return null;
+    return result.filePaths[0];
+  });
+
   ipcMain.handle('check-update', async () => {
     try {
       return await getLatestRelease();
