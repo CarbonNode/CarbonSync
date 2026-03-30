@@ -336,6 +336,21 @@ body {
 }
 .example:hover { border-color: var(--accent); color: var(--text); }
 
+/* ---- Search Bar ---- */
+.search-bar { margin-bottom: 10px; }
+.search-input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 7px 12px;
+  color: var(--text);
+  font-size: 13px;
+  outline: none;
+}
+.search-input:focus { border-color: var(--accent); }
+.search-input::placeholder { color: #444; }
+
 /* ---- Games Tab ---- */
 .games-toolbar {
   display: flex; justify-content: space-between; align-items: center;

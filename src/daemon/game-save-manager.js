@@ -348,6 +348,26 @@ class GameSaveManager extends EventEmitter {
   }
 
   /**
+   * Deep scan — walks all watched directories up to 3 levels deep looking
+   * for save-like files. Slower than scanNow but finds games that the quick
+   * scan misses (games not in the DB and not matching engine patterns).
+   */
+  async massLookup() {
+    const existing = await this.detector.deepScanForGames();
+    let newCount = 0;
+    const dismissed = this._getMergedDismissals();
+    for (const { game, saveBase, rootKey, isHeuristic } of existing) {
+      if (dismissed.has(game.id)) continue;
+      if (!this._library.has(game.id)) {
+        this._ensureLibraryEntry(game, saveBase, rootKey, isHeuristic);
+        newCount++;
+      }
+    }
+    await this._saveLibrary();
+    return { found: existing.length, new: newCount };
+  }
+
+  /**
    * Add a custom game with a manually specified path.
    */
   async addCustomGame({ name, savePath }) {

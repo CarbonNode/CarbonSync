@@ -54,9 +54,16 @@ async function refresh() {
 }
 
 // ---- Folders ----
+let folderSearchQuery = '';
+
 function renderFolders(folders) {
   // Filter out internal folders (Game Saves — managed in Games tab)
   folders = folders.filter(f => !f.internal);
+  // Apply search filter
+  if (folderSearchQuery) {
+    const q = folderSearchQuery.toLowerCase();
+    folders = folders.filter(f => f.name.toLowerCase().includes(q) || f.path.toLowerCase().includes(q));
+  }
   const el = document.getElementById('folders-list');
   if (folders.length === 0) {
     el.innerHTML = '<div class="empty">No folders synced yet. Add a folder or drag one in.</div>';
@@ -159,6 +166,11 @@ async function removeExclude(index) {
 }
 
 function setupFolderActions() {
+  document.getElementById('folder-search').addEventListener('input', (e) => {
+    folderSearchQuery = e.target.value;
+    renderFolders(currentStatus.folders || []);
+  });
+
   document.getElementById('btn-add').addEventListener('click', async () => {
     const p = await api.pickFolder();
     if (p) {
@@ -245,6 +257,11 @@ function renderActivity() {
 
 // ---- Devices ----
 function renderDevices(devices) {
+  // Filter out self
+  const myName = currentStatus.deviceName || '';
+  const myId = currentStatus.deviceId || '';
+  devices = devices.filter(d => d.hostname !== myName && d.deviceId !== myId && d.hostname !== require('os')?.hostname?.());
+
   const el = document.getElementById('devices-list');
   if (devices.length === 0) {
     el.innerHTML = '<div class="empty">No other CarbonSync devices found</div>';
@@ -462,18 +479,32 @@ async function toggleScanDir(dirKey, enabled) {
   renderScanStatus();
 }
 
+let gameSearchQuery = '';
+
 function renderGames() {
   const el = document.getElementById('games-list');
   const countEl = document.getElementById('games-count');
   const enabledCount = gameLibrary.filter(g => g.enabled).length;
   countEl.textContent = `${gameLibrary.length} game${gameLibrary.length !== 1 ? 's' : ''} detected (${enabledCount} active)`;
 
-  if (gameLibrary.length === 0) {
-    el.innerHTML = '<div class="empty">No game saves detected yet. Games will appear here automatically when saves are found in Documents or AppData.</div>';
+  let filtered = gameLibrary;
+  if (gameSearchQuery) {
+    const q = gameSearchQuery.toLowerCase();
+    filtered = gameLibrary.filter(g =>
+      (g.displayName || g.name).toLowerCase().includes(q) ||
+      (g.saveBase || '').toLowerCase().includes(q) ||
+      (g.id || '').toLowerCase().includes(q)
+    );
+  }
+
+  if (filtered.length === 0) {
+    el.innerHTML = gameLibrary.length === 0
+      ? '<div class="empty">No game saves detected yet. Games will appear here automatically when saves are found in Documents or AppData.</div>'
+      : '<div class="empty">No games match your search.</div>';
     return;
   }
 
-  el.innerHTML = gameLibrary.map(g => {
+  el.innerHTML = filtered.map(g => {
     const isExpanded = expandedGames.has(g.id);
     const displayName = g.displayName || g.name;
     const timeAgo = g.lastBackup ? fmtTimeAgo(g.lastBackup) : 'never';
@@ -764,6 +795,13 @@ async function confirmAddGame() {
 }
 
 function setupGames() {
+  // Search
+  document.getElementById('game-search').addEventListener('input', (e) => {
+    gameSearchQuery = e.target.value;
+    renderGames();
+  });
+
+  // Rescan (quick — checks known game DB paths)
   document.getElementById('btn-scan-games').addEventListener('click', async () => {
     const btn = document.getElementById('btn-scan-games');
     btn.disabled = true; btn.textContent = 'Scanning...';
@@ -773,6 +811,18 @@ function setupGames() {
       refreshGames();
     } catch (err) { toast(`Scan failed: ${err.message}`, 'error'); }
     btn.disabled = false; btn.textContent = 'Rescan';
+  });
+
+  // Mass Lookup (deep — walks all watched directories for anything game-like)
+  document.getElementById('btn-mass-lookup').addEventListener('click', async () => {
+    const btn = document.getElementById('btn-mass-lookup');
+    btn.disabled = true; btn.textContent = 'Scanning...';
+    try {
+      const result = await api.massLookup();
+      toast(`Deep scan: ${result.found} game(s) found, ${result.new} new`, 'success');
+      refreshGames();
+    } catch (err) { toast(`Mass lookup failed: ${err.message}`, 'error'); }
+    btn.disabled = false; btn.textContent = 'Mass Lookup';
   });
 
   document.getElementById('btn-add-game').addEventListener('click', openAddGamePopup);

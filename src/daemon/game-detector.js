@@ -366,6 +366,93 @@ class GameDetector extends EventEmitter {
     console.log(`Scan found ${found.size} game(s)`);
     return Array.from(found.values());
   }
+
+  /**
+   * Deep scan — walks all watched dirs up to 3 levels deep, looks for
+   * any directory containing save-like files. Much slower than scanExistingGames
+   * but catches games not in the DB and not matching engine patterns.
+   */
+  async deepScanForGames() {
+    const roots = this.gameDB.resolveRoots();
+    const enabledDirs = this.config.data.settings?.gameSaveScanDirs;
+    const enabledSet = new Set(enabledDirs || Object.keys(roots));
+    const found = new Map();
+
+    // First run the normal scan
+    const normal = await this.scanExistingGames();
+    for (const entry of normal) {
+      found.set(entry.game.id, entry);
+    }
+
+    const SAVE_EXTS = new Set([
+      '.sav', '.save', '.savegame', '.dat', '.sl2', '.profile',
+      '.es3', '.sfs', '.rws', '.fos', '.ess', '.lsv', '.owsave',
+      '.gwsave', '.celeste', '.jkr', '.autosave', '.rpgsave',
+      '.rvdata2', '.rvdata', '.rxdata',
+    ]);
+
+    const SAVE_DIRS = new Set([
+      'saves', 'savedata', 'savegames', 'savegame', 'save',
+      'saved games', 'savedgames', 'save_files', 'savefiles',
+    ]);
+
+    // Walk each root up to 3 levels
+    for (const [rootKey, rootDir] of Object.entries(roots)) {
+      if (!enabledSet.has(rootKey) || !rootDir) continue;
+
+      const walk = async (dir, depth, parentName) => {
+        if (depth > 3) return;
+        let entries;
+        try { entries = await fsp.readdir(dir, { withFileTypes: true }); } catch { return; }
+
+        let hasSaveFile = false;
+        let hasSaveDir = false;
+
+        for (const entry of entries) {
+          if (entry.name.startsWith('.')) continue;
+          if (entry.isFile()) {
+            const ext = path.extname(entry.name).toLowerCase();
+            if (SAVE_EXTS.has(ext)) hasSaveFile = true;
+          }
+          if (entry.isDirectory()) {
+            if (SAVE_DIRS.has(entry.name.toLowerCase())) hasSaveDir = true;
+          }
+        }
+
+        if ((hasSaveFile || hasSaveDir) && depth >= 1) {
+          // This directory looks like it contains game saves
+          const gameName = parentName || path.basename(dir);
+          const id = `deep-${rootKey}-${gameName}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+
+          if (!found.has(id) && !this.gameDB.isBlocklisted(dir, rootKey)) {
+            found.set(id, {
+              game: { id, name: gameName, confidence: 'deep-scan' },
+              saveBase: dir,
+              rootKey,
+              isHeuristic: true,
+            });
+          }
+        }
+
+        // Recurse into subdirs
+        if (depth < 3) {
+          for (const entry of entries) {
+            if (!entry.isDirectory()) continue;
+            if (entry.name.startsWith('.')) continue;
+            if (/^[0-9a-f]{20,}$/i.test(entry.name)) continue; // UWP hash dirs
+            if (this.gameDB.isBlocklisted(path.join(dir, entry.name), rootKey)) continue;
+
+            await walk(path.join(dir, entry.name), depth + 1, depth === 0 ? entry.name : parentName || entry.name);
+          }
+        }
+      };
+
+      await walk(rootDir, 0, null);
+    }
+
+    console.log(`Deep scan found ${found.size} game(s)`);
+    return Array.from(found.values());
+  }
 }
 
 module.exports = { GameDetector };
