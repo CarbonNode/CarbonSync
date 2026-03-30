@@ -1,6 +1,6 @@
 {
   "name": "carbonsync",
-  "version": "1.8.6",
+  "version": "1.8.5",
   "description": "Fast file syncing — hub to devices, zero config",
   "main": "src/daemon/index.js",
   "scripts": {
