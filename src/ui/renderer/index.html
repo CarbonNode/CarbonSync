@@ -277,6 +277,29 @@
     </div>
   </div>
 
+  <!-- Sync Request Popup -->
+  <div id="sync-request-popup" class="popup-overlay hidden">
+    <div class="popup-box" style="width:550px;">
+      <div class="popup-header">
+        <h3>Sync Request</h3>
+      </div>
+      <div class="popup-body">
+        <div id="sync-request-info" style="margin-bottom:16px;">
+          <div style="font-size:16px;font-weight:700;color:var(--accent);margin-bottom:4px;" id="sr-device-name"></div>
+          <div style="font-size:12px;color:var(--text-dim);" id="sr-device-ip"></div>
+        </div>
+
+        <h4>Folders available to sync:</h4>
+        <div id="sr-folders" style="margin:10px 0;"></div>
+
+        <div style="display:flex;gap:8px;margin-top:16px;">
+          <button class="btn green" id="sr-approve" style="flex:1;">Accept & Sync</button>
+          <button class="btn red" id="sr-reject" style="flex:1;">Reject</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast container -->
   <div id="toast-container"></div>
 

@@ -982,7 +982,66 @@ function setupLiveEvents() {
       setTimeout(() => { badge.className = 'badge green'; }, 2000);
     }
   });
+
+  // Sync request popup
+  api.onSyncRequest((request) => {
+    showSyncRequest(request);
+  });
 }
+
+// ---- Sync Request Popup ----
+
+let pendingSyncRequest = null;
+
+function showSyncRequest(request) {
+  pendingSyncRequest = request;
+  const popup = document.getElementById('sync-request-popup');
+  document.getElementById('sr-device-name').textContent = `${request.deviceName} wants to sync with you`;
+  document.getElementById('sr-device-ip').textContent = request.ip;
+
+  const foldersEl = document.getElementById('sr-folders');
+  if (request.folders && request.folders.length > 0) {
+    foldersEl.innerHTML = request.folders.map(f => `
+      <label style="display:flex;align-items:center;gap:8px;padding:8px 10px;background:var(--bg);border-radius:6px;margin-bottom:4px;cursor:pointer;">
+        <input type="checkbox" checked data-folder="${escA(f.name)}" style="width:16px;height:16px;">
+        <div style="flex:1;">
+          <div style="font-weight:600;font-size:13px;">${esc(f.name)}</div>
+          <div style="font-size:11px;color:var(--text-dim);">${f.fileCount} files — ${f.direction}</div>
+        </div>
+      </label>
+    `).join('');
+  } else {
+    foldersEl.innerHTML = '<div class="empty">No folders available</div>';
+  }
+
+  popup.classList.remove('hidden');
+}
+
+function closeSyncRequest() {
+  document.getElementById('sync-request-popup').classList.add('hidden');
+  pendingSyncRequest = null;
+}
+
+// Wire up approve/reject buttons
+document.addEventListener('DOMContentLoaded', () => {
+  document.getElementById('sr-approve')?.addEventListener('click', async () => {
+    if (!pendingSyncRequest) return;
+    const checkboxes = document.querySelectorAll('#sr-folders input[type=checkbox]:checked');
+    const selectedFolders = [...checkboxes].map(cb => cb.dataset.folder);
+    await api.approvePeer(pendingSyncRequest.clientId, selectedFolders);
+    toast(`Approved sync with ${pendingSyncRequest.deviceName}`, 'success');
+    addActivity('connect', `Approved sync: ${pendingSyncRequest.deviceName}`);
+    closeSyncRequest();
+    refresh();
+  });
+
+  document.getElementById('sr-reject')?.addEventListener('click', async () => {
+    if (!pendingSyncRequest) return;
+    await api.rejectPeer(pendingSyncRequest.clientId);
+    toast(`Rejected ${pendingSyncRequest.deviceName}`, 'info');
+    closeSyncRequest();
+  });
+});
 
 // ---- Helpers ----
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
