@@ -284,6 +284,22 @@ class SyncServer extends EventEmitter {
   }
 
   getClientCount() { return this.clients.size; }
+
+  getConnectedClients() {
+    const result = [];
+    for (const [id, client] of this.clients) {
+      if (!client.authenticated) continue;
+      const ip = client.socket?.remoteAddress?.replace('::ffff:', '') || '';
+      result.push({
+        id,
+        ip,
+        port: client.socket?.remotePort,
+        deviceName: client.deviceName || ip,
+        deviceId: client.deviceId || '',
+      });
+    }
+    return result;
+  }
 }
 
 // ---- Client ----

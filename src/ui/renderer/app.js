@@ -263,7 +263,15 @@ function mergeDeviceLists(s) {
   const byIp = new Map();
   const connectedIPs = new Set();
 
-  // Add connected peers first (highest priority)
+  // Add inbound clients (devices that connected TO us)
+  for (const c of (s.inboundClients || [])) {
+    if (c.ip) {
+      connectedIPs.add(c.ip);
+      byIp.set(c.ip, { ...c, source: 'connected' });
+    }
+  }
+
+  // Add connected peers (outbound connections we made)
   for (const p of (s.connectedPeers || [])) {
     if (p.ip) {
       connectedIPs.add(p.ip);

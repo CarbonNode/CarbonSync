@@ -1261,6 +1261,12 @@ class CarbonSyncDevice extends EventEmitter {
       hubConnected: this.hubConnection?.authenticated || false,
       connectedClients: this.transport?.getClientCount() || 0,
       connectedPeers: this.getConnectedPeers(),
+      inboundClients: (this.transport?.getConnectedClients() || []).map(c => ({
+        ...c,
+        hostname: c.deviceName,
+        friendlyName: c.deviceName,
+        source: 'inbound',
+      })),
       savedPeers: this.config.data.savedPeers || [],
       folders,
       gameSaves: this.gameSaveManager?.getLibrary() || [],
