@@ -106,7 +106,7 @@ class GameSaveManager extends EventEmitter {
       if (!entry.knownDevices) entry.knownDevices = {};
       try {
         const displayName = this._getDisplayName(entry);
-        const history = await this.backup.getHistory(displayName);
+        const history = await this.backup.getHistory(displayName, gameId);
         for (const h of history) {
           if (h.sourceDevice && h.sourceDevice !== 'unknown') {
             const existing = entry.knownDevices[h.sourceDevice];
@@ -508,7 +508,7 @@ class GameSaveManager extends EventEmitter {
     const entry = this._library.get(gameId);
     if (!entry) return [];
     const displayName = this._getDisplayName(entry);
-    return this.backup.getHistory(displayName);
+    return this.backup.getHistory(displayName, gameId);
   }
 
   /**
@@ -518,7 +518,7 @@ class GameSaveManager extends EventEmitter {
     const entry = this._library.get(gameId);
     if (!entry) throw new Error(`Unknown game: ${gameId}`);
     const displayName = this._getDisplayName(entry);
-    return this.backup.restoreSave(displayName, backupTimestamp);
+    return this.backup.restoreSave(displayName, backupTimestamp, gameId);
   }
 
   /**
@@ -528,7 +528,7 @@ class GameSaveManager extends EventEmitter {
     const entry = this._library.get(gameId);
     if (!entry) throw new Error(`Unknown game: ${gameId}`);
     const displayName = this._getDisplayName(entry);
-    return this.backup.restoreCurrent(displayName);
+    return this.backup.restoreCurrent(displayName, undefined, gameId);
   }
 
   /**
@@ -619,7 +619,7 @@ class GameSaveManager extends EventEmitter {
 
     if (deleteBackups) {
       const displayName = this._getDisplayName(entry);
-      await this.backup.removeGame(displayName);
+      await this.backup.removeGame(displayName, gameId);
     }
 
     // Remove from custom games if applicable
@@ -750,7 +750,7 @@ class GameSaveManager extends EventEmitter {
     const entry = this._library.get(gameId);
     if (entry) {
       const displayName = this._getDisplayName(entry);
-      const files = await this.backup.listBackupFiles(displayName, backupDir);
+      const files = await this.backup.listBackupFiles(displayName, backupDir, gameId);
       if (files.length > 0) return files;
     }
     // Fallback: scan all game dirs for a matching backup
@@ -959,7 +959,7 @@ class GameSaveManager extends EventEmitter {
 
   async _autoRestoreGame(gameId, entry) {
     const displayName = this._getDisplayName(entry);
-    const currentDir = path.join(this.backup.gameDir(displayName), 'current');
+    const currentDir = path.join(this.backup.gameDir(displayName, gameId), 'current');
 
     // Resolve the LOCAL save path (handles cross-PC username differences)
     const localSaveBase = this._resolveLocalSaveBase(entry);
@@ -1000,7 +1000,7 @@ class GameSaveManager extends EventEmitter {
       this._markRestoredDir(localSaveBase);
 
       // Pre-restore safety backup + restore to resolved local path
-      await this.backup.restoreCurrent(displayName, localSaveBase);
+      await this.backup.restoreCurrent(displayName, localSaveBase, gameId);
 
       // Re-mark after restore (catches any new files created)
       this._markRestoredDir(localSaveBase);

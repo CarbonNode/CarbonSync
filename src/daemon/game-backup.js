@@ -29,11 +29,42 @@ class GameBackup {
 
   /**
    * Get the managed directory for a game.
+   * Uses gameId for stable folder names (rename-safe).
+   * Falls back to sanitized display name for backwards compat.
    */
-  gameDir(gameName) {
-    // Sanitize game name for filesystem
+  gameDir(gameName, gameId) {
+    // Prefer ID-based folder (stable across renames)
+    if (gameId) {
+      const idDir = path.join(this.gameSavesDir, gameId);
+      if (fs.existsSync(idDir)) return idDir;
+    }
+
+    // Check legacy name-based folder
     const safe = gameName.replace(/[<>:"/\\|?*]/g, '_').trim();
-    return path.join(this.gameSavesDir, safe);
+    const nameDir = path.join(this.gameSavesDir, safe);
+
+    // Migrate: if name-based exists but ID-based doesn't, rename it
+    if (gameId && fs.existsSync(nameDir)) {
+      const idDir = path.join(this.gameSavesDir, gameId);
+      try {
+        fs.renameSync(nameDir, idDir);
+        console.log(`Migrated game folder: ${safe} → ${gameId}`);
+        return idDir;
+      } catch {
+        return nameDir;
+      }
+    }
+
+    // New game: use ID if available, else name
+    if (gameId) return path.join(this.gameSavesDir, gameId);
+    return nameDir;
+  }
+
+  /**
+   * Convenience: resolve gameDir from a game entry object.
+   */
+  gameDirFromEntry(entry) {
+    return this.gameDir(entry.displayName || entry.name || entry.gameName || '', entry.id || entry.gameId || '');
   }
 
   /**
@@ -54,7 +85,7 @@ class GameBackup {
    * @returns {{ backupDir: string|null, fileCount: number, totalSize: number, timestamp: string, currentOnly: boolean }}
    */
   async backupGame({ gameId, gameName, saveBase, rootKey, relPath, changedPaths, sourceDevice, force }) {
-    const dir = this.gameDir(gameName);
+    const dir = this.gameDir(gameName, gameId);
     const currentDir = path.join(dir, 'current');
     const backupsDir = path.join(dir, 'backups');
 
@@ -332,8 +363,8 @@ class GameBackup {
    * Get backup history for a game.
    * Returns sorted array (newest first) of { timestamp, fileCount, totalSize, sourceDevice, dir }.
    */
-  async getHistory(gameName) {
-    const dir = this.gameDir(gameName);
+  async getHistory(gameName, gameId) {
+    const dir = this.gameDir(gameName, gameId);
     const backupsDir = path.join(dir, 'backups');
 
     let entries;
@@ -382,8 +413,8 @@ class GameBackup {
    * @param {string} backupTimestamp — directory name in backups/
    * @returns {{ restoredFiles: number }}
    */
-  async restoreSave(gameName, backupTimestamp) {
-    const dir = this.gameDir(gameName);
+  async restoreSave(gameName, backupTimestamp, gameId) {
+    const dir = this.gameDir(gameName, gameId);
     const metaPath = path.join(dir, '_game.json');
 
     let gameMeta;
@@ -414,8 +445,8 @@ class GameBackup {
   /**
    * Restore from current/ instead of a specific backup.
    */
-  async restoreCurrent(gameName, targetPath) {
-    const dir = this.gameDir(gameName);
+  async restoreCurrent(gameName, targetPath, gameId) {
+    const dir = this.gameDir(gameName, gameId);
     const metaPath = path.join(dir, '_game.json');
 
     let gameMeta;
@@ -591,8 +622,8 @@ class GameBackup {
   /**
    * Get game metadata from _game.json.
    */
-  async getGameMeta(gameName) {
-    const metaPath = path.join(this.gameDir(gameName), '_game.json');
+  async getGameMeta(gameName, gameId) {
+    const metaPath = path.join(this.gameDir(gameName, gameId), '_game.json');
     try {
       return JSON.parse(await fsp.readFile(metaPath, 'utf-8'));
     } catch {
@@ -603,8 +634,8 @@ class GameBackup {
   /**
    * Update game metadata (for rename, excludes, etc.).
    */
-  async updateGameMeta(gameName, updates) {
-    const dir = this.gameDir(gameName);
+  async updateGameMeta(gameName, updates, gameId) {
+    const dir = this.gameDir(gameName, gameId);
     const metaPath = path.join(dir, '_game.json');
 
     let meta = {};
@@ -652,8 +683,8 @@ class GameBackup {
    * List files inside a specific backup version.
    * Returns [{ path, size }] with paths relative to the backup root.
    */
-  async listBackupFiles(gameName, backupDirName) {
-    const dir = this.gameDir(gameName);
+  async listBackupFiles(gameName, backupDirName, gameId) {
+    const dir = this.gameDir(gameName, gameId);
     const backupDir = path.join(dir, 'backups', backupDirName);
     if (!fs.existsSync(backupDir)) return [];
 
@@ -684,8 +715,8 @@ class GameBackup {
   /**
    * Remove all backups for a game.
    */
-  async removeGame(gameName) {
-    const dir = this.gameDir(gameName);
+  async removeGame(gameName, gameId) {
+    const dir = this.gameDir(gameName, gameId);
     try {
       await fsp.rm(dir, { recursive: true });
     } catch (err) {
