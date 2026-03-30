@@ -98,6 +98,28 @@ class GameSaveManager extends EventEmitter {
       this._library.delete(id);
     }
 
+    // Populate knownDevices from backup history for each game
+    for (const [gameId, entry] of this._library) {
+      if (!entry.knownDevices) entry.knownDevices = {};
+      try {
+        const displayName = this._getDisplayName(entry);
+        const history = await this.backup.getHistory(displayName);
+        for (const h of history) {
+          if (h.sourceDevice && h.sourceDevice !== 'unknown') {
+            const existing = entry.knownDevices[h.sourceDevice];
+            if (!existing || !existing.lastBackup || h.timestamp > existing.lastBackup) {
+              entry.knownDevices[h.sourceDevice] = { status: 'synced', lastBackup: h.timestamp };
+            }
+          }
+        }
+      } catch {}
+      // Mark this device if save exists locally
+      const resolved = this._resolveLocalSaveBase(entry);
+      if (resolved && fs.existsSync(resolved)) {
+        entry.knownDevices[os.hostname()] = entry.knownDevices[os.hostname()] || { status: 'local', lastBackup: entry.lastBackup };
+      }
+    }
+
     // Only save if we actually have entries — don't overwrite a synced
     // library with an empty one (this PC may have no local games)
     if (this._library.size > 0) {
@@ -181,6 +203,9 @@ class GameSaveManager extends EventEmitter {
       if (result) {
         entry.lastBackup = result.timestamp;
         entry.backupCount = (entry.backupCount || 0) + 1;
+        // Track which devices have saves for this game
+        if (!entry.knownDevices) entry.knownDevices = {};
+        entry.knownDevices[os.hostname()] = { status: 'synced', lastBackup: result.timestamp };
         await this._saveLibrary();
 
         this.emit('save-backed-up', {
@@ -360,6 +385,7 @@ class GameSaveManager extends EventEmitter {
       lastBackup: g.lastBackup,
       backupCount: g.backupCount,
       excludes: g.excludes,
+      knownDevices: g.knownDevices || {},
     }));
 
     // Safety: don't overwrite a populated library with empty data
@@ -391,11 +417,35 @@ class GameSaveManager extends EventEmitter {
    * Get the full game library.
    */
   getLibrary() {
-    return Array.from(this._library.values()).map(g => ({
-      ...g,
-      displayName: this._getDisplayName(g),
-      saveBase: this._resolveLocalSaveBase(g), // Always show resolved local path
-    }));
+    const myDevice = os.hostname();
+    const localSaveExists = new Map(); // gameId -> boolean
+
+    return Array.from(this._library.values()).map(g => {
+      const resolved = this._resolveLocalSaveBase(g);
+      const existsLocally = resolved && fs.existsSync(resolved);
+
+      // Build device status from cached backup info
+      const devices = {};
+      // This device
+      if (existsLocally) {
+        devices[myDevice] = { status: 'local', lastBackup: g.lastBackup };
+      }
+      // Other devices from backup metadata (cached in library)
+      if (g.knownDevices) {
+        for (const [dev, info] of Object.entries(g.knownDevices)) {
+          if (dev === myDevice) continue;
+          devices[dev] = info;
+        }
+      }
+
+      return {
+        ...g,
+        displayName: this._getDisplayName(g),
+        saveBase: resolved,
+        existsLocally,
+        devices,
+      };
+    });
   }
 
   _getDisplayName(game) {

@@ -444,6 +444,16 @@ body {
   font-weight: 700; letter-spacing: 0.5px;
 }
 
+.game-devices {
+  display: flex; gap: 8px; margin-top: 3px; flex-wrap: wrap;
+}
+.game-device-badge {
+  font-size: 10px; color: var(--text-dim);
+  background: var(--bg); padding: 1px 6px; border-radius: 3px;
+  border: 1px solid var(--border);
+  cursor: default;
+}
+
 .game-header {
   display: flex; align-items: center; gap: 10px;
   padding: 12px 14px;

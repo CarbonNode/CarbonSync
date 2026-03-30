@@ -756,6 +756,25 @@ async function toggleScanDir(dirKey, enabled) {
 
 let gameSearchQuery = '';
 
+function renderGameDevices(game) {
+  const devices = game.devices;
+  if (!devices || Object.keys(devices).length === 0) return '';
+  const myName = currentStatus.deviceName || '';
+  const peers = currentStatus.peers || {};
+
+  return `<div class="game-devices">${Object.entries(devices).map(([dev, info]) => {
+    const isMe = dev === myName;
+    const friendlyName = peers[dev] || dev;
+    const icon = info.status === 'local' ? '🟢' :
+                 info.status === 'synced' ? '✅' :
+                 info.status === 'syncing' ? '🔄' : '⬜';
+    const label = isMe ? 'This PC' : friendlyName;
+    const time = info.lastBackup ? fmtTimeAgo(info.lastBackup) : '';
+    const tooltip = `${label}: ${info.status}${time ? ' (' + time + ')' : ''}`;
+    return `<span class="game-device-badge" title="${escA(tooltip)}">${icon} ${esc(label)}</span>`;
+  }).join('')}</div>`;
+}
+
 function renderGames() {
   const el = document.getElementById('games-list');
   const countEl = document.getElementById('games-count');
@@ -802,6 +821,7 @@ function renderGames() {
             <span>${g.backupCount || 0} version${(g.backupCount || 0) !== 1 ? 's' : ''}</span>
             ${g.excludes?.length > 0 ? `<span class="exclude-badge">${g.excludes.length} exclude${g.excludes.length > 1 ? 's' : ''}</span>` : ''}
           </div>
+          ${renderGameDevices(g)}
         </div>
         <div class="game-actions" onclick="event.stopPropagation()">
           ${g.saveBase ? `<span class="open-folder-btn" onclick="openFolder('${escA(g.saveBase)}')" title="Open save folder">&#128194;</span>` : ''}
