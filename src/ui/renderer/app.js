@@ -359,7 +359,11 @@ function setupSettings() {
     document.getElementById('set-hub-address').value = cfg.hubAddress || '';
     document.getElementById('set-hub-key').value = cfg.hubApiKey || '';
     const hubStatus = document.getElementById('hub-status');
-    hubStatus.textContent = cfg.hubAddress ? `Connected to ${cfg.hubAddress}` : 'This PC is the hub';
+    if (cfg.hubAddress) {
+      hubStatus.innerHTML = `<span style="color:var(--accent)">Syncing with hub: ${esc(cfg.hubAddress)}</span>`;
+    } else {
+      hubStatus.innerHTML = `<span style="color:var(--green)">&#10004; This PC is the hub — other PCs connect to this one</span>`;
+    }
   });
   api.checkUpdate().then(r => {
     document.getElementById('current-version').textContent = r.current || '—';

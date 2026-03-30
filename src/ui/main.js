@@ -7,6 +7,7 @@ const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, dialog } = require
 const path = require('path');
 const os = require('os');
 const { CarbonSyncDevice } = require('../daemon/device');
+const { writeFrame } = require('../daemon/transport');
 const { getLatestRelease, downloadInstaller, installAndRestart } = require('../daemon/updater');
 
 app.name = 'CarbonSync';
@@ -200,6 +201,16 @@ function setupIPC() {
     if (!server.config.data.peers) server.config.data.peers = {};
     server.config.data.peers[hostname] = friendlyName;
     server.config.save();
+
+    // Tell the peer to update its own device name
+    if (server.transport) {
+      for (const [, client] of server.transport.clients) {
+        if (client.authenticated && (client.deviceName === hostname || client.deviceId === hostname)) {
+          writeFrame(client.socket, { type: 'set_device_name', name: friendlyName });
+        }
+      }
+    }
+
     return server.getStatus();
   });
 

@@ -25,6 +25,7 @@ const { Discovery } = require('./discovery');
 const { ensureFirewallRule } = require('./firewall');
 const { ensureCerts } = require('./tls-certs');
 const { MSG, SYNC_STATE } = require('../shared/protocol');
+const { GameSaveManager } = require('./game-save-manager');
 
 const MAX_CONCURRENT_PUSHES = 4;
 const PUSH_DEBOUNCE_MS = 2000;
@@ -148,6 +149,19 @@ class CarbonSyncDevice extends EventEmitter {
       }
     }, intervalMs);
 
+    // 7. Game save detection & backup
+    if (this.config.data.settings?.gameSaveEnabled !== false) {
+      this.gameSaveManager = new GameSaveManager({
+        configDir: this.configDir,
+        config: this.config,
+      });
+      try {
+        await this.gameSaveManager.start();
+      } catch (err) {
+        console.error('Game save manager failed:', err.message);
+      }
+    }
+
     console.log('=== CarbonSync Ready ===');
     this.emit('ready');
   }
@@ -175,13 +189,17 @@ class CarbonSyncDevice extends EventEmitter {
 
     this.hubConnection.on('message', (msg) => {
       if (msg.type === MSG.NOTIFY) {
-        // Hub pushed a change — pull if we're receiving this folder
         const folderConfig = this.config.folders.find(f => f.name === msg.folder);
         if (folderConfig && (folderConfig.direction === 'receive' || folderConfig.direction === 'both')) {
           this._pullFolder(folderConfig);
         }
       } else if (msg.type === MSG.FOLDER_LIST) {
         this.emit('hub-folders', msg.folders);
+      } else if (msg.type === 'set_device_name') {
+        // Hub renamed us
+        console.log(`Hub renamed this device to: ${msg.name}`);
+        this.config.setDeviceName(msg.name);
+        this.emit('device-renamed', msg.name);
       }
     });
 
@@ -862,6 +880,7 @@ class CarbonSyncDevice extends EventEmitter {
       hubConnected: this.hubConnection?.authenticated || false,
       connectedClients: this.transport?.getClientCount() || 0,
       folders,
+      gameSaves: this.gameSaveManager?.getLibrary() || [],
       discoveredDevices: (this.discovery?.getServices() || []).map(d => ({
         ...d, friendlyName: peers[d.hostname] || d.hostname,
       })),
@@ -891,6 +910,7 @@ class CarbonSyncDevice extends EventEmitter {
     if (this._scanInterval) { clearInterval(this._scanInterval); this._scanInterval = null; }
     for (const [, timer] of this._pushTimers) clearTimeout(timer);
     this._pushTimers.clear();
+    if (this.gameSaveManager) await this.gameSaveManager.stop();
     if (this.hubConnection) this.hubConnection.disconnect();
     if (this.discovery) this.discovery.stop();
     if (this.transport) this.transport.stop();
