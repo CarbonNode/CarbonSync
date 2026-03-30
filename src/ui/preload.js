@@ -18,6 +18,9 @@ contextBridge.exposeInMainWorld('carbonsync', {
   onProgress: (cb) => {
     ipcRenderer.on('sync-progress', (_, data) => { try { cb(data); } catch {} });
   },
+  minimize: () => ipcRenderer.invoke('window-minimize'),
+  closeWindow: () => ipcRenderer.invoke('window-close'),
+
   onActivity: (cb) => {
     ipcRenderer.on('activity', (_, data) => { try { cb(data); } catch {} });
   },

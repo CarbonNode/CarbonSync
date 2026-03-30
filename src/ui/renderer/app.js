@@ -6,6 +6,7 @@ let currentStatus = {};
 // ---- Init ----
 
 async function init() {
+  setupTitlebar();
   setupTabs();
   setupFolderActions();
   setupDragDrop();
@@ -14,6 +15,17 @@ async function init() {
   setupLiveEvents();
   await refresh();
   setInterval(refresh, 8000);
+}
+
+// ---- Titlebar ----
+
+function setupTitlebar() {
+  document.getElementById('btn-minimize').addEventListener('click', () => {
+    window.carbonsync.minimize?.() || window.close();
+  });
+  document.getElementById('btn-close').addEventListener('click', () => {
+    window.carbonsync.closeWindow?.() || window.close();
+  });
 }
 
 // ---- Tabs ----

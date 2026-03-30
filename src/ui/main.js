@@ -63,7 +63,7 @@ function createWindow() {
     x: primary.bounds.x + Math.round((primary.bounds.width - 800) / 2),
     y: primary.bounds.y + Math.round((primary.bounds.height - 520) / 2),
     minWidth: 600, minHeight: 400,
-    frame: true, show: true,
+    frame: false, show: true,
     title: 'CarbonSync',
     icon: iconPath,
     backgroundColor: '#0a0a0f',
@@ -165,6 +165,9 @@ function setupIPC() {
       return server.engine.rescan(folderName);
     }
   });
+
+  ipcMain.handle('window-minimize', () => mainWindow?.minimize());
+  ipcMain.handle('window-close', () => mainWindow?.hide());
 
   ipcMain.handle('add-peer', async (_, rawIp, port) => {
     if (!rawIp) return { error: 'IP required' };

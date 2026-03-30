@@ -24,6 +24,22 @@ body {
   font-size: 13px;
 }
 
+/* ---- Titlebar ---- */
+.titlebar {
+  display: flex; justify-content: space-between; align-items: center;
+  height: 32px; padding: 0 8px 0 14px;
+  background: #08080c; -webkit-app-region: drag; flex-shrink: 0;
+}
+.titlebar-title { font-size: 11px; color: #555; font-weight: 600; letter-spacing: 0.5px; }
+.titlebar-btns { display: flex; -webkit-app-region: no-drag; }
+.tb-btn {
+  width: 36px; height: 28px; border: none; background: none;
+  color: #666; font-size: 13px; cursor: pointer; display: flex;
+  align-items: center; justify-content: center; border-radius: 4px;
+}
+.tb-btn:hover { background: #1a1a2a; color: #ccc; }
+.tb-close:hover { background: #ef4444; color: white; }
+
 /* ---- Header ---- */
 .header {
   display: flex;
