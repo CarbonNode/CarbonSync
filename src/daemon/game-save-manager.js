@@ -217,6 +217,8 @@ class GameSaveManager extends EventEmitter {
         gameId,
         gameName: displayName,
         saveBase,
+        rootKey: entry.rootKey,
+        relPath: entry.relPath,
         changedPaths,
         sourceDevice: os.hostname(),
       });
@@ -816,6 +818,8 @@ class GameSaveManager extends EventEmitter {
       gameId,
       gameName: displayName,
       saveBase: entry.saveBase,
+      rootKey: entry.rootKey,
+      relPath: entry.relPath,
       sourceDevice: os.hostname(),
       force: true, // Manual backup always creates a version
     });
@@ -888,6 +892,8 @@ class GameSaveManager extends EventEmitter {
           name: game.name,
           displayName: game.displayName || game.name,
           saveBase: game.saveBase,
+          rootKey: game.rootKey,
+          relPath: game.relPath,
           enabled: game.enabled !== false,
           isHeuristic: false,
           running: false,
@@ -909,6 +915,8 @@ class GameSaveManager extends EventEmitter {
       console.log(`Sync library update: ${added} new game(s) from synced backups`);
       await this._saveLibrary();
       this.emit('library-updated', { added });
+      // Auto-restore new games to their local paths
+      this.autoRestoreAll();
     }
   }
 

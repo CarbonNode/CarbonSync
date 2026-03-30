@@ -53,7 +53,7 @@ class GameBackup {
    * @param {boolean} opts.force — bypass cooldown (for manual backups)
    * @returns {{ backupDir: string|null, fileCount: number, totalSize: number, timestamp: string, currentOnly: boolean }}
    */
-  async backupGame({ gameId, gameName, saveBase, changedPaths, sourceDevice, force }) {
+  async backupGame({ gameId, gameName, saveBase, rootKey, relPath, changedPaths, sourceDevice, force }) {
     const dir = this.gameDir(gameName);
     const currentDir = path.join(dir, 'current');
     const backupsDir = path.join(dir, 'backups');
@@ -79,7 +79,7 @@ class GameBackup {
     if (fileCount === 0) return null;
 
     // Update game metadata
-    await this._updateGameMeta(dir, { gameId, gameName, saveBase });
+    await this._updateGameMeta(dir, { gameId, gameName, saveBase, rootKey, relPath });
 
     // Smart cooldown: skip versioned backup only if content hasn't changed.
     // If the save is different from the last backup, ALWAYS version it
@@ -260,7 +260,7 @@ class GameBackup {
   /**
    * Update _game.json metadata for a game.
    */
-  async _updateGameMeta(gameDir, { gameId, gameName, saveBase }) {
+  async _updateGameMeta(gameDir, { gameId, gameName, saveBase, rootKey, relPath }) {
     const metaPath = path.join(gameDir, '_game.json');
     let meta = {};
     try {
@@ -269,8 +269,10 @@ class GameBackup {
 
     meta.id = gameId;
     meta.name = gameName;
-    meta.displayName = meta.displayName || gameName; // Preserve user renames
+    meta.displayName = meta.displayName || gameName;
     meta.saveBase = saveBase;
+    if (rootKey) meta.rootKey = rootKey;
+    if (relPath) meta.relPath = relPath;
     meta.lastBackup = new Date().toISOString();
     meta.excludes = meta.excludes || [];
     meta.enabled = meta.enabled !== undefined ? meta.enabled : true;
