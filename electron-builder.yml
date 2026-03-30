@@ -8,7 +8,7 @@ win:
   target:
     - nsis
   icon: build/icon.ico
-  signAndEditExecutable: true
+  signAndEditExecutable: false
 nsis:
   oneClick: true
   runAfterFinish: true

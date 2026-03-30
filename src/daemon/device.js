@@ -47,6 +47,7 @@ class CarbonSyncDevice extends EventEmitter {
     this._pushQueues = new Map(); // folderName -> Set of relPaths pending push
     this._pushTimers = new Map(); // folderName -> debounce timer
     this._recentlyWritten = new Map(); // relPath -> timestamp (avoid watcher feedback loop)
+    this.peerFolders = new Map();     // peerKey -> [{ name, fileCount, direction }]
     this.gameSaveManager = null;  // Set by main.js if game save feature enabled
   }
 
@@ -347,6 +348,13 @@ class CarbonSyncDevice extends EventEmitter {
         console.log(`Connected to peer: ${peerInfo.deviceName} (${key})`);
         this.emit('peer-connected', { ip, port, deviceName: peerInfo.deviceName });
 
+        // Send our folder list to the peer
+        const myFolders = this.config.folders.filter(f => f.enabled && !f.internal).map(f => ({
+          name: f.name, fileCount: this.engine?.folders.get(f.name)?.scanner.getFileCount() || 0,
+          direction: f.direction || 'both',
+        }));
+        writeFrame(client.socket, { type: MSG.FOLDER_LIST, folders: myFolders });
+
         // Start syncing all folders with this peer
         this._syncWithPeer(peerInfo);
         resolve({ success: true, deviceName: peerInfo.deviceName });
@@ -360,7 +368,8 @@ class CarbonSyncDevice extends EventEmitter {
             this._pullFolderFromPeer(peerInfo, folderConfig);
           }
         } else if (msg.type === MSG.FOLDER_LIST) {
-          this.emit('peer-folders', { peer: key, folders: msg.folders });
+          this.peerFolders.set(key, msg.folders);
+          this.emit('peer-folders', { peer: key, deviceName: peerInfo.deviceName, folders: msg.folders });
         }
       });
 
@@ -502,6 +511,29 @@ class CarbonSyncDevice extends EventEmitter {
   /**
    * Get all connected peers.
    */
+  _getRemoteFolders() {
+    const result = [];
+    const myFolderNames = new Set(this.config.folders.map(f => f.name));
+    const peers = this.config.data.peers || {};
+    for (const [peerKey, folders] of this.peerFolders) {
+      const peerInfo = this.peerConnections.get(peerKey);
+      const deviceName = peerInfo?.deviceName || peerKey;
+      const friendlyName = peers[deviceName] || deviceName;
+      for (const f of folders) {
+        if (myFolderNames.has(f.name)) continue;
+        if (f.internal) continue;
+        result.push({
+          name: f.name,
+          fileCount: f.fileCount || 0,
+          direction: f.direction || 'both',
+          peerKey,
+          deviceName: friendlyName,
+        });
+      }
+    }
+    return result;
+  }
+
   getConnectedPeers() {
     const peers = [];
     for (const [key, info] of this.peerConnections) {
@@ -1268,6 +1300,7 @@ class CarbonSyncDevice extends EventEmitter {
         source: 'inbound',
       })),
       savedPeers: this.config.data.savedPeers || [],
+      remoteFolders: this._getRemoteFolders(),
       folders,
       gameSaves: this.gameSaveManager?.getLibrary() || [],
       discoveredDevices: (this.discovery?.getServices() || []).map(d => ({
