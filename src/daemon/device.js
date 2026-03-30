@@ -141,13 +141,9 @@ class CarbonSyncDevice extends EventEmitter {
       this._connectToHub();
     }
 
-    // 6. Periodic rescan
-    const intervalMs = (this.config.settings.scanIntervalMinutes || 5) * 60 * 1000;
-    this._scanInterval = setInterval(async () => {
-      for (const name of this.engine.getFolderNames()) {
-        await this.engine.rescan(name);
-      }
-    }, intervalMs);
+    // No periodic rescan — watcher handles real-time changes
+    // Startup scan above catches anything missed while app was closed
+    // Manual rescan available via UI button
 
     // 7. Game save detection & backup
     if (this.config.data.settings?.gameSaveEnabled !== false) {
