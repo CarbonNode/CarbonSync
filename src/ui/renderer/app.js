@@ -1122,6 +1122,9 @@ function setupGames() {
     btn.disabled = true; btn.textContent = 'Scanning...';
     await api.massLookup(); // Returns immediately, work runs in background
   });
+  // Auto-refresh when library changes from sync
+  api.onGameLibraryUpdated(() => refreshGames());
+
   api.onMassLookupDone((result) => {
     const btn = document.getElementById('btn-mass-lookup');
     btn.disabled = false; btn.textContent = 'Mass Lookup';

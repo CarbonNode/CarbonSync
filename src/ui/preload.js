@@ -49,6 +49,7 @@ contextBridge.exposeInMainWorld('carbonsync', {
 
   onBackupAllProgress: (cb) => { ipcRenderer.on('backup-all-progress', (_, d) => { try { cb(d); } catch {} }); },
   onBackupAllDone: (cb) => { ipcRenderer.on('backup-all-done', (_, d) => { try { cb(d); } catch {} }); },
+  onGameLibraryUpdated: (cb) => { ipcRenderer.on('game-library-updated', (_, d) => { try { cb(d); } catch {} }); },
   onMassLookupDone: (cb) => { ipcRenderer.on('mass-lookup-done', (_, d) => { try { cb(d); } catch {} }); },
 
   onStatusUpdate: (cb) => {

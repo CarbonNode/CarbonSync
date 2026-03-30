@@ -908,6 +908,7 @@ class GameSaveManager extends EventEmitter {
     if (added > 0) {
       console.log(`Sync library update: ${added} new game(s) from synced backups`);
       await this._saveLibrary();
+      this.emit('library-updated', { added });
     }
   }
 
