@@ -552,6 +552,144 @@ class GameSaveManager extends EventEmitter {
 
     return result;
   }
+
+  // ---- Auto-Restore (sync → local game dir) ----
+
+  /**
+   * Watch the game-saves folder for incoming sync changes.
+   * When current/ is updated by sync, auto-restore if newer.
+   */
+  _startSyncWatcher() {
+    const gameSavesDir = path.join(this.configDir, 'game-saves');
+    let debounceTimer = null;
+
+    try {
+      const watcher = require('@parcel/watcher');
+      watcher.subscribe(gameSavesDir, (err, events) => {
+        if (err) return;
+        // Only care about changes inside current/ dirs (sync updates)
+        const hasCurrent = events.some(e => e.path.includes(`${path.sep}current${path.sep}`) || e.path.includes('/current/'));
+        if (!hasCurrent) return;
+
+        // Debounce — sync may update many files at once
+        if (debounceTimer) clearTimeout(debounceTimer);
+        debounceTimer = setTimeout(() => this.autoRestoreAll(), 3000);
+      }, {
+        ignore: ['**/backups/**'],
+      }).then(sub => {
+        this._syncWatcherSub = sub;
+      }).catch(() => {});
+    } catch {}
+  }
+
+  /**
+   * For each game, check if the synced current/ has newer saves than the
+   * local game directory. If so, auto-restore (with pre-restore backup).
+   */
+  async autoRestoreAll() {
+    let restored = 0;
+    for (const [gameId, entry] of this._library) {
+      if (!entry.enabled || !entry.saveBase) continue;
+      try {
+        const did = await this._autoRestoreGame(gameId, entry);
+        if (did) restored++;
+      } catch (err) {
+        console.error(`Auto-restore failed for ${entry.displayName || entry.name}: ${err.message}`);
+      }
+    }
+    if (restored > 0) {
+      console.log(`Auto-restored ${restored} game(s) from sync`);
+    }
+  }
+
+  async _autoRestoreGame(gameId, entry) {
+    const displayName = this._getDisplayName(entry);
+    const currentDir = path.join(this.backup.gameDir(displayName), 'current');
+
+    // Check if current/ exists (from sync)
+    try {
+      await fsp.access(currentDir);
+    } catch {
+      return false; // No synced saves
+    }
+
+    // Get newest mtime in current/ (synced version)
+    const syncedMtime = await this._getNewestMtime(currentDir);
+    if (!syncedMtime) return false;
+
+    // Get newest mtime in the actual game save dir
+    const localMtime = await this._getNewestMtime(entry.saveBase);
+
+    // If synced is newer (or local doesn't exist), auto-restore
+    if (!localMtime || syncedMtime > localMtime) {
+      // Check if game is running — skip if so
+      const locked = await this._isAnyFileLocked(entry.saveBase);
+      if (locked) {
+        console.log(`Skipping auto-restore for ${displayName}: game appears to be running`);
+        return false;
+      }
+
+      console.log(`Auto-restoring ${displayName}: synced save is newer (${new Date(syncedMtime).toISOString()} > ${localMtime ? new Date(localMtime).toISOString() : 'none'})`);
+
+      // Pre-restore safety backup
+      await this.backup.restoreCurrent(displayName);
+
+      this.emit('save-restored', {
+        game: entry,
+        source: 'auto-sync',
+      });
+      return true;
+    }
+
+    return false;
+  }
+
+  async _getNewestMtime(dir) {
+    try {
+      await fsp.access(dir);
+    } catch {
+      return null;
+    }
+
+    let newest = 0;
+    const walk = async (d) => {
+      let entries;
+      try { entries = await fsp.readdir(d, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries) {
+        if (entry.name.startsWith('_meta') || entry.name.startsWith('.')) continue;
+        const fullPath = path.join(d, entry.name);
+        if (entry.isDirectory()) {
+          await walk(fullPath);
+        } else if (entry.isFile()) {
+          try {
+            const stat = await fsp.stat(fullPath);
+            if (stat.mtimeMs > newest) newest = stat.mtimeMs;
+          } catch {}
+        }
+      }
+    };
+    await walk(dir);
+    return newest || null;
+  }
+
+  async _isAnyFileLocked(dir) {
+    try {
+      await fsp.access(dir);
+    } catch {
+      return false;
+    }
+    const entries = await fsp.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+      if (!entry.isFile()) continue;
+      try {
+        const fd = await fsp.open(path.join(dir, entry.name), 'r');
+        await fd.close();
+      } catch (err) {
+        if (err.code === 'EBUSY' || err.code === 'EACCES') return true;
+      }
+    }
+    return false;
+  }
 }
 
 module.exports = { GameSaveManager };

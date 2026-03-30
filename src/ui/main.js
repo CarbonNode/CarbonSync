@@ -427,6 +427,10 @@ app.on('ready', async () => {
         sendToUI('activity', { type: 'game-backup', message: `Backed up ${info.game?.displayName || info.game?.name}: ${info.fileCount} files`, time: Date.now() });
       });
       server.gameSaveManager.on('game-running', (info) => sendToUI('game-running', info));
+      server.gameSaveManager.on('save-restored', (info) => {
+        sendToUI('save-restored', info);
+        sendToUI('activity', { type: 'game-restore', message: `Auto-restored ${info.game?.displayName || info.game?.name} from sync`, time: Date.now() });
+      });
     }
 
     // Auto-reconnect to saved peers

@@ -854,6 +854,7 @@ function setupLiveEvents() {
     else if (a.type === 'client-disconnected') addActivity('disconnect', `${a.deviceName || 'Client'} disconnected`);
     else if (a.type === 'file-changes') addActivity('change', `${a.count} file(s) changed in ${a.folder}`);
     else if (a.type === 'game-backup') addActivity('change', a.message);
+    else if (a.type === 'game-restore') { addActivity('change', a.message); refreshGames(); }
     const badge = document.getElementById('status-badge');
     if (a.type === 'client-disconnected') {
       badge.className = 'badge yellow';
