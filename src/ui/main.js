@@ -166,8 +166,15 @@ function setupIPC() {
     }
   });
 
-  ipcMain.handle('add-peer', async (_, ip, port) => {
-    if (!ip) return { error: 'IP required' };
+  ipcMain.handle('add-peer', async (_, rawIp, port) => {
+    if (!rawIp) return { error: 'IP required' };
+    // Handle ip:port format in the IP field
+    let ip = rawIp.trim();
+    if (ip.includes(':')) {
+      const parts = ip.split(':');
+      ip = parts[0];
+      port = parseInt(parts[1]) || port;
+    }
     port = port || 21547;
     // Test connection first
     const net = require('net');
