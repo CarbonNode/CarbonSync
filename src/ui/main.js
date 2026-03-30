@@ -7,7 +7,7 @@ const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, dialog } = require
 const path = require('path');
 const os = require('os');
 const { CarbonSyncServer } = require('../daemon/server');
-const { getLatestRelease, downloadUpdate } = require('../daemon/updater');
+const { getLatestRelease, downloadInstaller, installAndRestart } = require('../daemon/updater');
 
 app.name = 'CarbonSync';
 if (process.platform === 'win32') {
@@ -245,22 +245,18 @@ function setupIPC() {
       if (!release.hasUpdate) return { success: false, message: 'Already up to date' };
       if (!release.url) return { success: false, message: 'No download URL' };
 
-      const downloadsDir = app.getPath('downloads');
-      const destPath = path.join(downloadsDir, `CarbonSync-${release.version}.exe`);
-
       sendToUI('activity', { type: 'update', message: `Downloading v${release.version}...`, time: Date.now() });
 
-      await downloadUpdate(release.url, destPath, (pct) => {
+      const installerPath = await downloadInstaller(release.url, (pct) => {
         sendToUI('sync-progress', { phase: 'updating', file: `CarbonSync v${release.version}`, current: pct, total: 100 });
       });
 
-      sendToUI('activity', { type: 'update', message: `Downloaded to ${destPath}`, time: Date.now() });
+      sendToUI('activity', { type: 'update', message: `Installing v${release.version}...`, time: Date.now() });
 
-      // Open the downloaded file location
-      const { shell } = require('electron');
-      shell.showItemInFolder(destPath);
+      // Run installer silently and quit
+      installAndRestart(installerPath, app);
 
-      return { success: true, path: destPath, version: release.version };
+      return { success: true, version: release.version, installing: true };
     } catch (err) {
       return { success: false, message: err.message };
     }

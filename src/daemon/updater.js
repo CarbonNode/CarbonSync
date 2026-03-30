@@ -1,12 +1,16 @@
 /**
- * GitHub Release Updater
- * Checks for latest release, downloads portable exe, replaces current.
+ * GitHub Release Auto-Updater
+ *
+ * Downloads NSIS installer from latest GitHub release,
+ * runs it silently, and quits current app.
+ * The installer overwrites the old version automatically.
  */
 
 const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { execFile } = require('child_process');
+const os = require('os');
 
 const REPO = 'CarbonNode/CarbonSync';
 const CURRENT_VERSION = require('../../package.json').version;
@@ -25,14 +29,15 @@ function getLatestRelease() {
         try {
           const release = JSON.parse(data);
           const asset = release.assets?.find(a => a.name.endsWith('.exe'));
+          const version = release.tag_name?.replace(/^v/, '') || '';
           resolve({
-            version: release.tag_name?.replace(/^v/, '') || '',
+            version,
             name: release.name,
             url: asset?.browser_download_url || '',
             size: asset?.size || 0,
             notes: release.body || '',
             current: CURRENT_VERSION,
-            hasUpdate: release.tag_name?.replace(/^v/, '') !== CURRENT_VERSION,
+            hasUpdate: version && version !== CURRENT_VERSION,
           });
         } catch (err) { reject(err); }
       });
@@ -41,13 +46,15 @@ function getLatestRelease() {
   });
 }
 
-function downloadUpdate(url, destPath, onProgress) {
-  return new Promise((resolve, reject) => {
-    const tmpPath = destPath + '.download';
+/**
+ * Download the installer to a temp location.
+ */
+function downloadInstaller(url, onProgress) {
+  const destPath = path.join(os.tmpdir(), 'CarbonSync-Update.exe');
 
+  return new Promise((resolve, reject) => {
     const doDownload = (downloadUrl) => {
       https.get(downloadUrl, { headers: { 'User-Agent': 'CarbonSync' } }, (res) => {
-        // Follow redirects
         if (res.statusCode === 301 || res.statusCode === 302) {
           doDownload(res.headers.location);
           return;
@@ -59,7 +66,7 @@ function downloadUpdate(url, destPath, onProgress) {
 
         const totalSize = parseInt(res.headers['content-length'], 10) || 0;
         let downloaded = 0;
-        const file = fs.createWriteStream(tmpPath);
+        const file = fs.createWriteStream(destPath);
 
         res.on('data', (chunk) => {
           downloaded += chunk.length;
@@ -69,14 +76,9 @@ function downloadUpdate(url, destPath, onProgress) {
         });
 
         res.pipe(file);
-        file.on('finish', () => {
-          file.close(() => {
-            fs.renameSync(tmpPath, destPath);
-            resolve(destPath);
-          });
-        });
+        file.on('finish', () => file.close(() => resolve(destPath)));
         file.on('error', (err) => {
-          try { fs.unlinkSync(tmpPath); } catch {}
+          try { fs.unlinkSync(destPath); } catch {}
           reject(err);
         });
       }).on('error', reject);
@@ -86,4 +88,19 @@ function downloadUpdate(url, destPath, onProgress) {
   });
 }
 
-module.exports = { getLatestRelease, downloadUpdate, CURRENT_VERSION };
+/**
+ * Run the downloaded installer silently and quit the current app.
+ * NSIS /S flag = silent install, overwrites existing installation.
+ */
+function installAndRestart(installerPath, app) {
+  // Run installer with silent flag
+  execFile(installerPath, ['/S'], { detached: true, stdio: 'ignore' }).unref();
+
+  // Quit current app so installer can overwrite files
+  setTimeout(() => {
+    app.isQuitting = true;
+    app.quit();
+  }, 1000);
+}
+
+module.exports = { getLatestRelease, downloadInstaller, installAndRestart, CURRENT_VERSION };

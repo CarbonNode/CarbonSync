@@ -6,9 +6,14 @@ directories:
   buildResources: build
 win:
   target:
-    - portable
+    - nsis
   icon: build/icon.ico
   signAndEditExecutable: false
+nsis:
+  oneClick: true
+  runAfterFinish: true
+  deleteAppDataOnUninstall: true
+  shortcutName: CarbonSync
 files:
   - src/**/*
   - assets/**/*
