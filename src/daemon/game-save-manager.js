@@ -577,19 +577,32 @@ class GameSaveManager extends EventEmitter {
   async backupAll() {
     let success = 0;
     let skipped = 0;
+
+    // Collect eligible games
+    const eligible = [];
     for (const [gameId, entry] of this._library) {
       if (!entry.enabled || !entry.saveBase) { skipped++; continue; }
-      // Skip games whose save path doesn't exist on this PC
-      // (e.g., synced from another device's library)
       if (!fs.existsSync(entry.saveBase)) { skipped++; continue; }
-      try {
-        const result = await this.backupNow(gameId);
-        if (result) success++;
-        else skipped++;
-      } catch {
-        skipped++;
-      }
+      eligible.push(gameId);
     }
+
+    // Run up to 4 backups concurrently
+    const CONCURRENCY = 4;
+    let i = 0;
+    const runNext = async () => {
+      while (i < eligible.length) {
+        const gameId = eligible[i++];
+        try {
+          const result = await this.backupNow(gameId);
+          if (result) success++;
+          else skipped++;
+        } catch {
+          skipped++;
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, eligible.length) }, () => runNext()));
+
     return { success, skipped };
   }
 

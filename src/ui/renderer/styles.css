@@ -368,6 +368,20 @@ body {
 }
 .game-card:hover { border-color: #333; }
 .game-card.disabled { opacity: 0.5; }
+.game-card.new-game {
+  border-color: rgba(59, 130, 246, 0.4);
+  animation: newGamePulse 2s ease-in-out 3;
+}
+.game-card.new-game:hover { border-color: var(--accent); }
+@keyframes newGamePulse {
+  0%, 100% { border-color: rgba(59, 130, 246, 0.2); }
+  50% { border-color: rgba(59, 130, 246, 0.6); }
+}
+.game-new-tag {
+  font-size: 9px; padding: 1px 5px; border-radius: 3px;
+  background: #1e3a5f; color: var(--accent);
+  font-weight: 700; letter-spacing: 0.5px;
+}
 
 .game-header {
   display: flex; align-items: center; gap: 10px;

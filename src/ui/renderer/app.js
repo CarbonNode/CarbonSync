@@ -516,7 +516,8 @@ function renderGames() {
     const displayName = g.displayName || g.name;
     const timeAgo = g.lastBackup ? fmtTimeAgo(g.lastBackup) : 'never';
 
-    return `<div class="game-card${g.enabled ? '' : ' disabled'}">
+    const isNew = !g.lastBackup && !g.backupCount;
+    return `<div class="game-card${g.enabled ? '' : ' disabled'}${isNew ? ' new-game' : ''}">
       <div class="game-header" onclick="toggleGameExpand('${escA(g.id)}')">
         <svg class="game-chevron${isExpanded ? ' expanded' : ''}" viewBox="0 0 24 24" width="16" height="16">
           <path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
@@ -524,6 +525,7 @@ function renderGames() {
         <div class="game-info">
           <div class="game-name">
             ${esc(displayName)}
+            ${isNew ? '<span class="game-new-tag">NEW</span>' : ''}
             ${g.isHeuristic && !isGameConfirmed(g.id) ? '<span class="game-heuristic" title="Auto-detected — click to confirm or dismiss">?</span>' : ''}
             ${g.running ? '<span class="game-running">RUNNING</span>' : ''}
           </div>
@@ -534,6 +536,7 @@ function renderGames() {
           </div>
         </div>
         <div class="game-actions" onclick="event.stopPropagation()">
+          ${g.saveBase ? `<span class="open-folder-btn" onclick="openFolder('${escA(g.saveBase)}')" title="Open save folder">&#128194;</span>` : ''}
           <label class="game-toggle" title="${g.enabled ? 'Disable' : 'Enable'} sync">
             <input type="checkbox" ${g.enabled ? 'checked' : ''} onchange="toggleGameSync('${escA(g.id)}', this.checked)">
             <span class="toggle-slider"></span>
