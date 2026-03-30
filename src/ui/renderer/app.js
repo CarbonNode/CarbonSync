@@ -830,28 +830,36 @@ function setupGames() {
     btn.disabled = false; btn.textContent = 'Rescan';
   });
 
-  // Mass Lookup (deep — walks all watched directories for anything game-like)
+  // Mass Lookup (deep — runs in background, no UI freeze)
   document.getElementById('btn-mass-lookup').addEventListener('click', async () => {
     const btn = document.getElementById('btn-mass-lookup');
     btn.disabled = true; btn.textContent = 'Scanning...';
-    try {
-      const result = await api.massLookup();
-      toast(`Deep scan: ${result.found} game(s) found, ${result.new} new`, 'success');
-      refreshGames();
-    } catch (err) { toast(`Mass lookup failed: ${err.message}`, 'error'); }
+    await api.massLookup(); // Returns immediately, work runs in background
+  });
+  api.onMassLookupDone((result) => {
+    const btn = document.getElementById('btn-mass-lookup');
     btn.disabled = false; btn.textContent = 'Mass Lookup';
+    if (result.error) toast(`Mass lookup failed: ${result.error}`, 'error');
+    else toast(`Deep scan: ${result.found} game(s) found, ${result.new} new`, 'success');
+    refreshGames();
   });
 
-  // Backup All
+  // Backup All (runs in background with progress)
   document.getElementById('btn-backup-all').addEventListener('click', async () => {
     const btn = document.getElementById('btn-backup-all');
     btn.disabled = true; btn.textContent = 'Backing up...';
-    try {
-      const result = await api.backupAll();
-      toast(`Backed up ${result.success} game(s)${result.skipped ? `, ${result.skipped} skipped` : ''}`, 'success');
-      refreshGames();
-    } catch (err) { toast(`Backup failed: ${err.message}`, 'error'); }
+    await api.backupAll(); // Returns immediately
+  });
+  api.onBackupAllProgress((p) => {
+    const btn = document.getElementById('btn-backup-all');
+    btn.textContent = `Backing up ${p.done}/${p.total}...`;
+  });
+  api.onBackupAllDone((result) => {
+    const btn = document.getElementById('btn-backup-all');
     btn.disabled = false; btn.textContent = 'Backup All';
+    if (result.error) toast(`Backup failed: ${result.error}`, 'error');
+    else toast(`Backed up ${result.success} game(s)${result.skipped ? `, ${result.skipped} skipped` : ''}`, 'success');
+    refreshGames();
   });
 
   document.getElementById('btn-add-game').addEventListener('click', openAddGamePopup);

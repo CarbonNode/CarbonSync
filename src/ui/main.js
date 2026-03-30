@@ -336,12 +336,25 @@ function setupIPC() {
     return server?.gameSaveManager?.scanNow();
   });
 
-  ipcMain.handle('mass-lookup', async () => {
-    return server?.gameSaveManager?.massLookup();
+  ipcMain.handle('mass-lookup', () => {
+    // Run in background — don't block UI
+    if (!server?.gameSaveManager) return { found: 0, new: 0 };
+    server.gameSaveManager.massLookup().then(result => {
+      sendToUI('mass-lookup-done', result);
+      sendToUI('status-update', server.getStatus());
+    }).catch(err => sendToUI('mass-lookup-done', { error: err.message }));
+    return { started: true };
   });
 
-  ipcMain.handle('backup-all', async () => {
-    return server?.gameSaveManager?.backupAll();
+  ipcMain.handle('backup-all', () => {
+    // Run in background — don't block UI
+    if (!server?.gameSaveManager) return { success: 0, skipped: 0 };
+    server.gameSaveManager.backupAll((progress) => {
+      sendToUI('backup-all-progress', progress);
+    }).then(result => {
+      sendToUI('backup-all-done', result);
+    }).catch(err => sendToUI('backup-all-done', { error: err.message }));
+    return { started: true };
   });
 
   ipcMain.handle('open-folder', (_, folderPath) => {

@@ -30,6 +30,7 @@ class GameSaveManager extends EventEmitter {
     this._library = new Map(); // gameId -> library entry
     this._libraryPath = path.join(configDir, 'game-saves', '_library.json');
     this._running = false;
+    this._recentlyRestored = new Map(); // absPath -> timestamp (skip detector feedback loop)
   }
 
   async start() {
@@ -119,6 +120,15 @@ class GameSaveManager extends EventEmitter {
     // Ensure game is in library
     const entry = this._ensureLibraryEntry(game, saveBase, rootKey, isHeuristic);
     entry.running = false;
+
+    // Skip files we just restored (prevents restore → detect → backup → sync loop)
+    const now = Date.now();
+    const filtered = changedPaths.filter(p => {
+      const restored = this._recentlyRestored.get(p);
+      return !(restored && now - restored < 10000);
+    });
+    if (filtered.length === 0) return;
+    changedPaths = filtered;
 
     // Check if game is enabled
     if (!entry.enabled) return;
@@ -616,17 +626,22 @@ class GameSaveManager extends EventEmitter {
   /**
    * Backup all enabled games at once.
    */
-  async backupAll() {
+  async backupAll(onProgress) {
     let success = 0;
     let skipped = 0;
+    let done = 0;
 
     // Collect eligible games
     const eligible = [];
     for (const [gameId, entry] of this._library) {
       if (!entry.enabled || !entry.saveBase) { skipped++; continue; }
-      if (!fs.existsSync(entry.saveBase)) { skipped++; continue; }
+      const resolved = this._resolveLocalSaveBase(entry);
+      if (!fs.existsSync(resolved)) { skipped++; continue; }
       eligible.push(gameId);
     }
+
+    const total = eligible.length;
+    if (onProgress) onProgress({ done: 0, total, current: '' });
 
     // Run up to 4 backups concurrently
     const CONCURRENCY = 4;
@@ -634,6 +649,8 @@ class GameSaveManager extends EventEmitter {
     const runNext = async () => {
       while (i < eligible.length) {
         const gameId = eligible[i++];
+        const entry = this._library.get(gameId);
+        const name = this._getDisplayName(entry);
         try {
           const result = await this.backupNow(gameId);
           if (result) success++;
@@ -641,11 +658,13 @@ class GameSaveManager extends EventEmitter {
         } catch {
           skipped++;
         }
+        done++;
+        if (onProgress) onProgress({ done, total, current: name });
       }
     };
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, eligible.length) }, () => runNext()));
 
-    return { success, skipped };
+    return { success, skipped, total };
   }
 
   async backupNow(gameId) {
@@ -761,6 +780,10 @@ class GameSaveManager extends EventEmitter {
       // Pre-restore safety backup + restore to resolved local path
       await this.backup.restoreCurrent(displayName, localSaveBase);
 
+      // Mark all files in the restored directory as recently-restored
+      // so the detector doesn't trigger a backup loop
+      this._markRestoredDir(localSaveBase);
+
       // Update entry's saveBase to the resolved local path
       entry.saveBase = localSaveBase;
 
@@ -808,6 +831,28 @@ class GameSaveManager extends EventEmitter {
    * via the Folders tab. If so, folder sync handles delivery — no need
    * for game-save auto-restore to write there too.
    */
+  _markRestoredDir(dir) {
+    const now = Date.now();
+    try {
+      const walk = (d) => {
+        const entries = fs.readdirSync(d, { withFileTypes: true });
+        for (const e of entries) {
+          const full = path.join(d, e.name);
+          this._recentlyRestored.set(full, now);
+          if (e.isDirectory()) walk(full);
+        }
+      };
+      this._recentlyRestored.set(dir, now);
+      if (fs.existsSync(dir)) walk(dir);
+    } catch {}
+    // Cleanup old entries
+    if (this._recentlyRestored.size > 5000) {
+      for (const [k, ts] of this._recentlyRestored) {
+        if (now - ts > 15000) this._recentlyRestored.delete(k);
+      }
+    }
+  }
+
   _isInsideSyncedFolder(absPath) {
     const resolved = path.resolve(absPath);
     for (const folder of this.config.folders) {
