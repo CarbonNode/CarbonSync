@@ -292,6 +292,13 @@ function mergeDeviceLists(s) {
     }
   }
 
+  // Apply friendly names from the rename map
+  const peerNames = s.peers || {};
+  for (const d of byIp.values()) {
+    const renamed = peerNames[d.hostname] || peerNames[d.deviceName];
+    if (renamed) d.friendlyName = renamed;
+  }
+
   return Array.from(byIp.values());
 }
 
