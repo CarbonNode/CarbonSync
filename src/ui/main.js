@@ -344,6 +344,10 @@ function setupIPC() {
     return server?.gameSaveManager?.backupAll();
   });
 
+  ipcMain.handle('open-folder', (_, folderPath) => {
+    if (folderPath) require('electron').shell.openPath(folderPath);
+  });
+
   ipcMain.handle('add-custom-game', async (_, cfg) => {
     return server?.gameSaveManager?.addCustomGame(cfg);
   });

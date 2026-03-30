@@ -560,6 +560,9 @@ class GameSaveManager extends EventEmitter {
     let skipped = 0;
     for (const [gameId, entry] of this._library) {
       if (!entry.enabled || !entry.saveBase) { skipped++; continue; }
+      // Skip games whose save path doesn't exist on this PC
+      // (e.g., synced from another device's library)
+      if (!fs.existsSync(entry.saveBase)) { skipped++; continue; }
       try {
         const result = await this.backupNow(gameId);
         if (result) success++;

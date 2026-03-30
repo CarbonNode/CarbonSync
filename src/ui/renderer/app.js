@@ -581,12 +581,18 @@ async function loadGameHistory(gameId) {
       return;
     }
 
-    el.innerHTML = history.map(h => {
+    // Show save path at top of history + open folder button
+    const game = gameLibrary.find(g => g.id === gameId);
+    const pathHtml = game?.saveBase
+      ? `<div class="save-path-hint">${esc(game.saveBase)} <span class="open-folder-btn" onclick="openFolder('${escA(game.saveBase)}')" title="Open folder">&#128194;</span></div>`
+      : '';
+
+    el.innerHTML = pathHtml + history.map(h => {
       const isPreRestore = h.dir.startsWith('pre-restore-');
       const backupKey = `${gameId}:${h.dir}`;
       const filesExpanded = expandedBackups.has(backupKey);
       const date = new Date(h.timestamp);
-      const dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+      const dateStr = isNaN(date.getTime()) ? h.dir : (date.toLocaleDateString() + ' ' + date.toLocaleTimeString());
       return `<div class="save-entry${isPreRestore ? ' pre-restore' : ''}">
         <div class="save-row">
           <svg class="save-chevron${filesExpanded ? ' expanded' : ''}" viewBox="0 0 24 24" width="12" height="12"
@@ -898,9 +904,15 @@ function setupGames() {
   refreshGames();
 }
 
+function openFolder(folderPath) {
+  api.openFolder(folderPath);
+}
+
 function fmtTimeAgo(isoString) {
   if (!isoString) return 'never';
-  const diff = Date.now() - new Date(isoString).getTime();
+  const d = new Date(isoString);
+  if (isNaN(d.getTime())) return 'never';
+  const diff = Date.now() - d.getTime();
   if (diff < 0) return 'just now';
   const mins = Math.floor(diff / 60000);
   if (mins < 1) return 'just now';

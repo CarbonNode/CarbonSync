@@ -471,8 +471,14 @@ body {
 
 .save-path-hint {
   font-size: 10px; color: #444; font-family: 'Consolas', monospace;
-  padding: 2px 0 4px 0; word-break: break-all;
+  padding: 4px 0 6px 0; word-break: break-all;
+  border-bottom: 1px solid #111118; margin-bottom: 4px;
 }
+.open-folder-btn {
+  cursor: pointer; font-size: 12px; margin-left: 6px;
+  opacity: 0.5; transition: opacity 0.15s;
+}
+.open-folder-btn:hover { opacity: 1; }
 
 /* Scan dirs panel */
 .scan-dirs-panel {

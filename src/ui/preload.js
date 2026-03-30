@@ -35,6 +35,7 @@ contextBridge.exposeInMainWorld('carbonsync', {
   dismissGame: (gameId) => ipcRenderer.invoke('dismiss-game', gameId),
   backupGameNow: (gameId) => ipcRenderer.invoke('backup-game-now', gameId),
   massLookup: () => ipcRenderer.invoke('mass-lookup'),
+  openFolder: (p) => ipcRenderer.invoke('open-folder', p),
   backupAll: () => ipcRenderer.invoke('backup-all'),
   pickGameFolder: () => ipcRenderer.invoke('pick-game-folder'),
   getBackupFiles: (gameId, dir) => ipcRenderer.invoke('get-backup-files', gameId, dir),
