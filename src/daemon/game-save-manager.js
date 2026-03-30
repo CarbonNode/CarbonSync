@@ -37,6 +37,7 @@ class GameSaveManager extends EventEmitter {
     }
     this._running = false;
     this._recentlyRestored = new Map(); // absPath -> timestamp (skip detector feedback loop)
+    this._syncingLibrary = false; // prevent concurrent _syncLibraryFromBackups
   }
 
   async start() {
@@ -130,14 +131,17 @@ class GameSaveManager extends EventEmitter {
     await this.detector.start();
     console.log('Game save detector started');
 
-    // Also pick up games from existing backups in game-saves folder
+    // Pick up games from existing backups (already on disk)
     await this._syncLibraryFromBackups();
 
     // Watch the game-saves folder itself for incoming sync changes
     this._startSyncWatcher();
 
-    // Auto-restore any saves that are newer from sync (initial check)
-    setTimeout(() => this.autoRestoreAll(), 5000);
+    // Delayed checks: give sync time to deliver files from peers before auto-restore
+    // 10s: first sync library refresh (catches files that arrived during startup)
+    // 15s: auto-restore check
+    setTimeout(() => this._syncLibraryFromBackups(), 10000);
+    setTimeout(() => this.autoRestoreAll(), 15000);
 
     // Periodic check for synced games (catches anything the watcher missed)
     this._syncCheckInterval = setInterval(() => this._syncLibraryFromBackups(), 30000);
@@ -814,10 +818,11 @@ class GameSaveManager extends EventEmitter {
     if (!entry) throw new Error(`Unknown game: ${gameId}`);
 
     const displayName = this._getDisplayName(entry);
+    const resolved = this._resolveLocalSaveBase(entry);
     const result = await this.backup.backupGame({
       gameId,
       gameName: displayName,
-      saveBase: entry.saveBase,
+      saveBase: resolved,
       rootKey: entry.rootKey,
       relPath: entry.relPath,
       sourceDevice: os.hostname(),
@@ -867,8 +872,13 @@ class GameSaveManager extends EventEmitter {
         }
       }).then(sub => {
         this._syncWatcherSub = sub;
-      }).catch(() => {});
-    } catch {}
+        console.log('Game saves sync watcher started');
+      }).catch(err => {
+        console.warn('Game saves sync watcher failed:', err.message);
+      });
+    } catch (err) {
+      console.warn('Game saves sync watcher setup failed:', err.message);
+    }
   }
 
   /**
@@ -876,6 +886,13 @@ class GameSaveManager extends EventEmitter {
    * but aren't in the library yet. Also reload dismissed list.
    */
   async _syncLibraryFromBackups() {
+    // Prevent concurrent runs (called from startup, timer, and watcher)
+    if (this._syncingLibrary) return;
+    this._syncingLibrary = true;
+    try { await this._doSyncLibraryFromBackups(); } finally { this._syncingLibrary = false; }
+  }
+
+  async _doSyncLibraryFromBackups() {
     // Reload dismissed list from synced file
     await this._loadSyncedDismissals();
     const dismissed = this._getMergedDismissals();
@@ -979,11 +996,13 @@ class GameSaveManager extends EventEmitter {
 
       console.log(`Auto-restoring ${displayName} to ${localSaveBase}: synced save is newer`);
 
+      // Mark BEFORE restore so detector ignores files as they're written
+      this._markRestoredDir(localSaveBase);
+
       // Pre-restore safety backup + restore to resolved local path
       await this.backup.restoreCurrent(displayName, localSaveBase);
 
-      // Mark all files in the restored directory as recently-restored
-      // so the detector doesn't trigger a backup loop
+      // Re-mark after restore (catches any new files created)
       this._markRestoredDir(localSaveBase);
 
       // Update entry's saveBase to the resolved local path
@@ -1077,12 +1096,17 @@ class GameSaveManager extends EventEmitter {
     }
     const entries = await fsp.readdir(dir, { withFileTypes: true });
     for (const entry of entries) {
-      if (!entry.isFile()) continue;
-      try {
-        const fd = await fsp.open(path.join(dir, entry.name), 'r');
-        await fd.close();
-      } catch (err) {
-        if (err.code === 'EBUSY' || err.code === 'EACCES') return true;
+      const fullPath = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        // Recurse into subdirectories
+        if (await this._isAnyFileLocked(fullPath)) return true;
+      } else if (entry.isFile()) {
+        try {
+          const fd = await fsp.open(fullPath, 'r');
+          await fd.close();
+        } catch (err) {
+          if (err.code === 'EBUSY' || err.code === 'EACCES') return true;
+        }
       }
     }
     return false;
