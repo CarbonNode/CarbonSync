@@ -463,6 +463,7 @@ function renderGames() {
           </label>
           <button class="btn sm ghost" onclick="openGameSettings('${escA(g.id)}')" title="Settings">&#9881;</button>
           <button class="btn sm ghost" onclick="backupGameNow('${escA(g.id)}')" title="Backup now">&#8635;</button>
+          <button class="btn sm ghost" onclick="dismissGameEntry('${escA(g.id)}')" title="Dismiss this game">&#10005;</button>
         </div>
       </div>
       ${isExpanded ? `<div class="save-history" id="history-${g.id}"><div class="empty" style="padding:8px 0;">Loading...</div></div>` : ''}
@@ -538,6 +539,14 @@ async function loadGameHistory(gameId) {
 async function toggleGameSync(gameId, enabled) {
   await api.toggleGameSync(gameId, enabled);
   toast(enabled ? 'Sync enabled' : 'Sync disabled', 'success');
+  refreshGames();
+}
+
+async function dismissGameEntry(gameId) {
+  const game = gameLibrary.find(g => g.id === gameId);
+  const name = game?.displayName || game?.name || gameId;
+  await api.dismissGame(gameId);
+  toast(`Dismissed: ${name}`, 'info');
   refreshGames();
 }
 

@@ -285,17 +285,29 @@ class GameDetector extends EventEmitter {
     }
 
     // Strategy 2: Scan LocalLow for Unity games (Company/Game/)
+    // Skip directories that are clearly not game companies (hashes, system dirs, etc.)
+    const NOT_GAME_COMPANIES = new Set([
+      'microsoft', 'adobe', 'google', 'apple', 'mozilla', 'oracle', 'java',
+      'nvidia', 'amd', 'intel', 'realtek',
+      'dxcache', 'shader cache', 'shadercache', 'tokens', 'temp',
+      'sun', 'hp', 'dell', 'lenovo', 'asus',
+    ]);
     if (enabledSet.has('appdata_locallow') && roots.appdata_locallow) {
       try {
         const companies = await fsp.readdir(roots.appdata_locallow, { withFileTypes: true });
         for (const company of companies) {
           if (!company.isDirectory()) continue;
+          // Skip hash-named dirs (UWP sandboxes), dot-dirs, and known non-game companies
+          if (/^[0-9a-f]{20,}$/i.test(company.name)) continue;
+          if (company.name.startsWith('.')) continue;
+          if (NOT_GAME_COMPANIES.has(company.name.toLowerCase())) continue;
           if (this.gameDB.isBlocklisted(path.join(roots.appdata_locallow, company.name), 'appdata_locallow')) continue;
 
           try {
             const games = await fsp.readdir(path.join(roots.appdata_locallow, company.name), { withFileTypes: true });
             for (const gameDir of games) {
               if (!gameDir.isDirectory()) continue;
+              if (gameDir.name.startsWith('.')) continue;
               const saveBase = path.join(roots.appdata_locallow, company.name, gameDir.name);
               const id = `unity-${company.name}-${gameDir.name}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
               if (!found.has(id)) {

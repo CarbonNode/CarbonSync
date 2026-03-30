@@ -89,18 +89,25 @@ function downloadInstaller(url, onProgress) {
 }
 
 /**
- * Run the downloaded installer silently and quit the current app.
- * NSIS /S flag = silent install, overwrites existing installation.
+ * Run the downloaded installer and quit the current app.
+ * Uses spawn with shell to handle NSIS exe properly.
  */
 function installAndRestart(installerPath, app) {
-  // Run installer with silent flag
-  execFile(installerPath, ['/S'], { detached: true, stdio: 'ignore' }).unref();
+  const { spawn } = require('child_process');
+
+  // Launch installer detached — it will run after we quit
+  const child = spawn('cmd.exe', ['/c', 'start', '', installerPath], {
+    detached: true,
+    stdio: 'ignore',
+    windowsHide: true,
+  });
+  child.unref();
 
   // Quit current app so installer can overwrite files
   setTimeout(() => {
     app.isQuitting = true;
     app.quit();
-  }, 1000);
+  }, 2000);
 }
 
 module.exports = { getLatestRelease, downloadInstaller, installAndRestart, CURRENT_VERSION };

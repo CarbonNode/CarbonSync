@@ -52,6 +52,8 @@
     "**/analytics/**",
     "**/node_modules/**",
     "**/.git/**",
+    "**/.sync/**",
+    "**/.carbonsync/**",
     "**/Session Storage/**",
     "**/Local Storage/**",
     "**/IndexedDB/**",
