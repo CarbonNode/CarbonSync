@@ -97,7 +97,14 @@ class CarbonSyncDevice extends EventEmitter {
       this.emit('changes', { folder, changes: filtered });
     });
 
-    await this.engine.start();
+    // Start engine but don't await scan — let UI render first
+    // Scan runs in background, UI updates via progress events
+    this.engine.start().then(() => {
+      this.emit('scan-complete');
+      console.log('Initial scan complete');
+    }).catch(err => {
+      console.error('Engine start failed:', err.message);
+    });
 
     // 2. TLS certs
     const certs = ensureCerts(this.configDir);

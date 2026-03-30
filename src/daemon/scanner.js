@@ -121,6 +121,8 @@ class Scanner {
 
         if (i % 100 === 0 || i === files.length - 1) {
           this.onProgress({ phase: 'scanning', current: i + 1, total: files.length, file: relPath });
+          // Yield to event loop every 100 files so UI stays responsive
+          await new Promise(r => setImmediate(r));
         }
 
         try {
