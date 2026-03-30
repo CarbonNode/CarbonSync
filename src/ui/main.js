@@ -64,7 +64,7 @@ function createWindow() {
     x: primary.bounds.x + Math.round((primary.bounds.width - 1000) / 2),
     y: primary.bounds.y + Math.round((primary.bounds.height - 700) / 2),
     minWidth: 700, minHeight: 500,
-    frame: false, show: true,
+    frame: false, show: false,
     title: 'CarbonSync',
     icon: iconPath,
     backgroundColor: '#0a0a0f',
@@ -79,6 +79,13 @@ function createWindow() {
   const htmlPath = path.join(__dirname, 'renderer', 'index.html');
   console.log('Loading HTML from:', htmlPath);
   mainWindow.loadFile(htmlPath);
+
+  // Only show window after content is painted (no white flash)
+  mainWindow.once('ready-to-show', () => {
+    if (!process.argv.includes('--hidden')) {
+      mainWindow.show();
+    }
+  });
 
   mainWindow.webContents.on('did-fail-load', (e, code, desc) => {
     console.error('Page load failed:', code, desc);
@@ -427,9 +434,7 @@ app.on('ready', async () => {
   console.log('UI: window created');
   setupIPC();
   console.log('UI: IPC ready');
-
-  // Show window immediately
-  mainWindow.show();
+  // Window shows via ready-to-show event in createWindow()
   mainWindow.focus();
   console.log('UI: window shown');
 
@@ -440,8 +445,8 @@ app.on('ready', async () => {
   tray.on('double-click', () => { mainWindow?.show(); mainWindow?.focus(); });
   console.log('UI: tray created');
 
-  if (!process.argv.includes('--hidden')) {
-    mainWindow.show();
+  if (process.argv.includes('--hidden')) {
+    // Stay hidden — tray only
   }
 
   // Auto-start with Windows
