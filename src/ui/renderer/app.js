@@ -59,10 +59,10 @@ async function refresh() {
 // ---- Folders ----
 let folderSearchQuery = '';
 
+const collapsedGroups = new Set();
+
 function renderFolders(folders) {
-  // Filter out internal folders (Game Saves — managed in Games tab)
   folders = folders.filter(f => !f.internal);
-  // Apply search filter
   if (folderSearchQuery) {
     const q = folderSearchQuery.toLowerCase();
     folders = folders.filter(f => f.name.toLowerCase().includes(q) || f.path.toLowerCase().includes(q));
@@ -73,59 +73,133 @@ function renderFolders(folders) {
     return;
   }
 
-  el.innerHTML = folders.map(f => {
-    const excludeCount = (f.excludes || []).length;
-    const dir = f.direction || 'both';
-
-    // Device sync icons
-    let deviceHtml = '';
-    if (f.devices) {
-      for (const [name, ds] of Object.entries(f.devices)) {
-        const peerName = currentStatus.peers?.[name] || name;
-        const icon = ds.status === 'source' ? '🟢' :
-                     ds.status === 'synced' ? '✅' :
-                     ds.status === 'syncing' ? '🔄' : '⬜';
-        const pctText = ds.status === 'syncing' ? ` ${ds.progress}%` : '';
-        const tip = ds.status === 'source' ? 'Source (this PC)' :
-                    ds.status === 'synced' ? `Synced${ds.lastSync ? ' ' + new Date(ds.lastSync).toLocaleTimeString() : ''}` :
-                    ds.status === 'syncing' ? `Syncing ${ds.filesComplete}/${ds.filesTotal}` : 'Not synced';
-        deviceHtml += `<span class="device-icon" title="${esc(tip)}">${icon} ${esc(peerName)}${pctText}</span>`;
-      }
+  // Group folders
+  const grouped = new Map(); // group -> folders
+  const ungrouped = [];
+  for (const f of folders) {
+    if (f.group) {
+      if (!grouped.has(f.group)) grouped.set(f.group, []);
+      grouped.get(f.group).push(f);
+    } else {
+      ungrouped.push(f);
     }
+  }
 
-    const iconHtml = f.icon ? `<img src="file:///${f.icon.replace(/\\\\/g, '/')}" class="folder-icon-img">` : '';
+  let html = '';
 
-    return `<div class="folder-card">
-      <div class="folder-header">
-        ${iconHtml}
-        <div class="folder-info">
-          <div class="folder-name">
-            <span>${esc(f.name)}</span>
-            <button class="btn sm ghost" onclick="renameFolder('${escA(f.folderPath || f.path)}', '${escA(f.name)}')" title="Rename">Rename</button>
-            <button class="btn sm ghost" onclick="setFolderIcon('${escA(f.folderPath || f.path)}')" title="Set icon">Icon</button>
-          </div>
-          <div class="folder-path">${esc(f.path)}</div>
-          <div class="folder-meta">
-            <span><strong>${(f.fileCount || 0).toLocaleString()}</strong> files</span>
-            <span><strong>${fmt(f.totalSize)}</strong></span>
-            ${excludeCount > 0 ? `<span class="exclude-badge">${excludeCount} exclude${excludeCount > 1 ? 's' : ''}</span>` : ''}
-          </div>
-          <div class="device-row">${deviceHtml}</div>
-        </div>
-        <div class="folder-btns">
-          <select class="direction-select" onchange="setDirection('${escA(f.name)}', this.value)">
-            <option value="both" ${dir==='both'?'selected':''}>⇆ Push + Receive</option>
-            <option value="push" ${dir==='push'?'selected':''}>⬆ Push to Hub</option>
-            <option value="receive" ${dir==='receive'?'selected':''}>⬇ Receive from Hub</option>
-          </select>
-          <span class="open-folder-btn" onclick="openFolder('${escA(f.path)}')" title="Open folder">&#128194;</span>
-          <button class="btn sm ghost" onclick="openFolderSettings('${escA(f.name)}')">⚙</button>
-          <button class="btn sm ghost" onclick="rescanFolder('${escA(f.name)}')">Rescan</button>
-          <button class="btn sm red" onclick="removeFolder('${escA(f.path)}')">Remove</button>
-        </div>
+  // Render groups first
+  for (const [groupName, groupFolders] of grouped) {
+    const collapsed = collapsedGroups.has(groupName);
+    html += `<div class="folder-group">
+      <div class="folder-group-header" onclick="toggleGroup('${escA(groupName)}')">
+        <svg class="group-chevron${collapsed ? '' : ' expanded'}" viewBox="0 0 24 24" width="16" height="16">
+          <path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <span class="group-name">${esc(groupName)}</span>
+        <span class="group-count">${groupFolders.length}</span>
       </div>
+      ${collapsed ? '' : '<div class="folder-group-items">' + groupFolders.map(f => renderFolderCard(f)).join('') + '</div>'}
     </div>`;
-  }).join('');
+  }
+
+  // Render ungrouped
+  html += ungrouped.map(f => renderFolderCard(f)).join('');
+  el.innerHTML = html;
+}
+
+function renderFolderCard(f) {
+  const excludeCount = (f.excludes || []).length;
+  const dir = f.direction || 'both';
+
+  let deviceHtml = '';
+  if (f.devices) {
+    for (const [name, ds] of Object.entries(f.devices)) {
+      const peerName = currentStatus.peers?.[name] || name;
+      const icon = ds.status === 'source' || ds.status === 'hub' ? '🟢' :
+                   ds.status === 'synced' ? '✅' :
+                   ds.status === 'syncing' ? '🔄' : '⬜';
+      const pctText = ds.status === 'syncing' ? ` ${ds.progress}%` : '';
+      deviceHtml += `<span class="device-icon" title="${esc(ds.status)}">${icon} ${esc(peerName)}${pctText}</span>`;
+    }
+  }
+
+  const iconHtml = f.icon ? `<img src="file:///${f.icon.replace(/\\\\/g, '/')}" class="folder-icon-img">` : '';
+  const fPath = f.folderPath || f.path;
+
+  return `<div class="folder-card" data-path="${escA(fPath)}" draggable="true" ondragstart="onFolderDragStart(event, '${escA(fPath)}')">
+    <div class="folder-header">
+      ${iconHtml}
+      <div class="folder-info">
+        <div class="folder-name">
+          <span>${esc(f.name)}</span>
+          <button class="btn sm ghost" onclick="renameFolder('${escA(fPath)}', '${escA(f.name)}')" title="Rename">Rename</button>
+          <button class="btn sm ghost" onclick="setFolderIcon('${escA(fPath)}')" title="Set icon">Icon</button>
+          <button class="btn sm ghost" onclick="setGroupPrompt('${escA(fPath)}')" title="Set group">Group</button>
+        </div>
+        <div class="folder-path">${esc(f.path)}</div>
+        <div class="folder-meta">
+          <span><strong>${(f.fileCount || 0).toLocaleString()}</strong> files</span>
+          <span><strong>${fmt(f.totalSize)}</strong></span>
+          ${excludeCount > 0 ? `<span class="exclude-badge">${excludeCount} exclude${excludeCount > 1 ? 's' : ''}</span>` : ''}
+          ${f.group ? `<span class="group-badge">${esc(f.group)}</span>` : ''}
+        </div>
+        <div class="device-row">${deviceHtml}</div>
+      </div>
+      <div class="folder-btns">
+        <select class="direction-select" onchange="setDirection('${escA(f.name)}', this.value)">
+          <option value="both" ${dir==='both'?'selected':''}>⇆ Push + Receive</option>
+          <option value="push" ${dir==='push'?'selected':''}>⬆ Push to Hub</option>
+          <option value="receive" ${dir==='receive'?'selected':''}>⬇ Receive from Hub</option>
+        </select>
+        <span class="open-folder-btn" onclick="openFolder('${escA(f.path)}')" title="Open folder">&#128194;</span>
+        <button class="btn sm ghost" onclick="openFolderSettings('${escA(f.name)}')">⚙</button>
+        <button class="btn sm ghost" onclick="rescanFolder('${escA(f.name)}')">Rescan</button>
+        <button class="btn sm red" onclick="removeFolder('${escA(fPath)}')">Remove</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function toggleGroup(name) {
+  if (collapsedGroups.has(name)) collapsedGroups.delete(name);
+  else collapsedGroups.add(name);
+  refresh();
+}
+
+function setGroupPrompt(folderPath) {
+  const el = document.querySelector(`.folder-card[data-path="${folderPath}"] .folder-name span`);
+  if (!el) return;
+
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.placeholder = 'Group name (empty = ungrouped)';
+  input.style.cssText = 'background:var(--bg);border:1px solid var(--accent);border-radius:4px;padding:3px 8px;color:var(--text);font-size:12px;width:180px;outline:none;';
+
+  const parent = el.parentNode;
+  parent.appendChild(input);
+  input.focus();
+
+  let saved = false;
+  const save = async () => {
+    if (saved) return;
+    saved = true;
+    const group = input.value.trim();
+    await api.setFolderGroup(folderPath, group || null);
+    if (group) toast(`Added to group: ${group}`, 'success');
+    else toast('Removed from group', 'info');
+    refresh();
+  };
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); save(); }
+    if (e.key === 'Escape') { saved = true; refresh(); }
+  });
+  input.addEventListener('blur', save);
+}
+
+function onFolderDragStart(event, folderPath) {
+  event.dataTransfer.setData('text/plain', folderPath);
+  event.dataTransfer.effectAllowed = 'move';
 }
 
 // ---- Remote Folders (from connected peers) ----

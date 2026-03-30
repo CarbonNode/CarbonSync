@@ -146,6 +146,14 @@ class Config {
     return false;
   }
 
+  setFolderGroup(folderPath, group) {
+    const folder = this.data.folders.find(f => f.path === path.resolve(folderPath));
+    if (folder) {
+      folder.group = group || null;
+      this.save();
+    }
+  }
+
   setFolderDirection(folderPath, direction) {
     if (!['push', 'receive', 'both'].includes(direction)) return;
     const folder = this.data.folders.find(f => f.path === path.resolve(folderPath));

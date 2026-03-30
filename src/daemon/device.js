@@ -1291,13 +1291,19 @@ class CarbonSyncDevice extends EventEmitter {
   getStatus() {
     const folders = [];
     if (this.engine) {
-      for (const name of this.engine.getFolderNames()) {
-        const info = this.engine.getFolderInfo(name);
-        const cfgFolder = this.config.folders.find(f => f.name === name);
+      for (const engineName of this.engine.getFolderNames()) {
+        const info = this.engine.getFolderInfo(engineName);
+        // Match config by path (not name, since name may have been renamed)
+        const enginePath = this.engine.folders.get(engineName)?.path;
+        const cfgFolder = this.config.folders.find(f => f.path === enginePath) ||
+                          this.config.folders.find(f => f.name === engineName);
+        // Use config name (may be renamed) over engine name
+        info.name = cfgFolder?.name || engineName;
         info.excludes = cfgFolder?.excludes || [];
         info.direction = cfgFolder?.direction || 'both';
         info.icon = cfgFolder?.icon || null;
-        info.folderPath = cfgFolder?.path || '';
+        info.group = cfgFolder?.group || null;
+        info.folderPath = cfgFolder?.path || enginePath || '';
         info.internal = cfgFolder?.internal || false;
 
         info.devices = {};

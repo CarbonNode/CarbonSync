@@ -19,6 +19,7 @@ contextBridge.exposeInMainWorld('carbonsync', {
   setHubConnection: (addr, key) => ipcRenderer.invoke('set-hub-connection', addr, key),
   renameFolder: (path, name) => ipcRenderer.invoke('rename-folder', path, name),
   setFolderIcon: (path) => ipcRenderer.invoke('set-folder-icon', path),
+  setFolderGroup: (path, group) => ipcRenderer.invoke('set-folder-group', path, group),
   setFolderDirection: (folder, dir) => ipcRenderer.invoke('set-folder-direction', folder, dir),
   checkUpdate: () => ipcRenderer.invoke('check-update'),
   downloadUpdate: () => ipcRenderer.invoke('download-update'),

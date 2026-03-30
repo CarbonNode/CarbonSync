@@ -254,6 +254,12 @@ function setupIPC() {
     return dest;
   });
 
+  ipcMain.handle('set-folder-group', (_, folderPath, group) => {
+    server.config.setFolderGroup(folderPath, group);
+    sendToUI('status-update', server.getStatus());
+    return server.getStatus();
+  });
+
   ipcMain.handle('set-folder-direction', (_, folderName, direction) => {
     const folder = server.config.folders.find(f => f.name === folderName);
     if (folder) server.config.setFolderDirection(folder.path, direction);

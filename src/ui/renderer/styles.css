@@ -326,6 +326,26 @@ body {
 }
 .direction-select:focus { border-color: var(--accent); }
 
+/* ---- Folder Groups ---- */
+.folder-group {
+  margin-bottom: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.folder-group-header {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 14px; cursor: pointer; user-select: none;
+}
+.folder-group-header:hover { background: rgba(255,255,255,0.02); border-radius: 8px; }
+.group-chevron { color: var(--text-dim); flex-shrink: 0; transition: transform 0.2s; }
+.group-chevron.expanded { transform: rotate(90deg); }
+.group-name { font-weight: 700; font-size: 14px; color: var(--accent); }
+.group-count { font-size: 11px; color: var(--text-dim); background: var(--border); padding: 1px 6px; border-radius: 10px; }
+.folder-group-items { padding: 0 8px 8px; }
+.folder-group-items .folder-card { margin-bottom: 4px; }
+.group-badge { font-size: 10px; padding: 1px 6px; border-radius: 3px; background: #1e3a5f; color: var(--accent); }
+
 /* ---- Folder icon ---- */
 .folder-icon-img {
   width: 40px; height: 40px; border-radius: 6px; object-fit: cover;
