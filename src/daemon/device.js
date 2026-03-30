@@ -1166,6 +1166,8 @@ class CarbonSyncDevice extends EventEmitter {
       hubAddress: this.config.hubAddress,
       hubConnected: this.hubConnection?.authenticated || false,
       connectedClients: this.transport?.getClientCount() || 0,
+      connectedPeers: this.getConnectedPeers(),
+      savedPeers: this.config.data.savedPeers || [],
       folders,
       gameSaves: this.gameSaveManager?.getLibrary() || [],
       discoveredDevices: (this.discovery?.getServices() || []).map(d => ({
@@ -1199,6 +1201,10 @@ class CarbonSyncDevice extends EventEmitter {
     this._pushTimers.clear();
     if (this.gameSaveManager) await this.gameSaveManager.stop();
     if (this.hubConnection) this.hubConnection.disconnect();
+    for (const [, peer] of this.peerConnections) {
+      peer.client?.disconnect();
+    }
+    this.peerConnections.clear();
     if (this.discovery) this.discovery.stop();
     if (this.transport) this.transport.stop();
     if (this.engine) await this.engine.stop();

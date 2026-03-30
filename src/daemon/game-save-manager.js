@@ -95,6 +95,12 @@ class GameSaveManager extends EventEmitter {
     // Start watching for changes
     await this.detector.start();
     console.log('Game save detector started');
+
+    // Watch the game-saves folder itself for incoming sync changes
+    this._startSyncWatcher();
+
+    // Auto-restore any saves that are newer from sync (initial check)
+    setTimeout(() => this.autoRestoreAll(), 5000);
   }
 
   async stop() {

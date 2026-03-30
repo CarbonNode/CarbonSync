@@ -428,6 +428,22 @@ app.on('ready', async () => {
       });
       server.gameSaveManager.on('game-running', (info) => sendToUI('game-running', info));
     }
+
+    // Auto-reconnect to saved peers
+    const savedPeers = server.config.data.savedPeers || [];
+    if (savedPeers.length > 0) {
+      console.log(`Reconnecting to ${savedPeers.length} saved peer(s)...`);
+      for (const peer of savedPeers) {
+        server.connectToPeer(peer.ip, peer.port).then(result => {
+          if (result.success) {
+            sendToUI('activity', { type: 'connect', message: `Reconnected to ${result.deviceName || peer.ip}`, time: Date.now() });
+            const peerEntry = { role: 'peer', ip: peer.ip, port: peer.port, hostname: result.deviceName || peer.ip };
+            if (server.discovery) server.discovery.services.set(peer.ip, peerEntry);
+            sendToUI('status-update', server.getStatus());
+          }
+        }).catch(() => {});
+      }
+    }
   }).catch(err => {
     console.error('Server start failed:', err);
     sendToUI('activity', { type: 'error', message: `Server failed: ${err.message}`, time: Date.now() });
