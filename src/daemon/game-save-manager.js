@@ -130,6 +130,9 @@ class GameSaveManager extends EventEmitter {
     await this.detector.start();
     console.log('Game save detector started');
 
+    // Also pick up games from existing backups in game-saves folder
+    await this._syncLibraryFromBackups();
+
     // Watch the game-saves folder itself for incoming sync changes
     this._startSyncWatcher();
 
@@ -739,9 +742,25 @@ class GameSaveManager extends EventEmitter {
    */
   async getBackupFiles(gameId, backupDir) {
     const entry = this._library.get(gameId);
-    if (!entry) return [];
-    const displayName = this._getDisplayName(entry);
-    return this.backup.listBackupFiles(displayName, backupDir);
+    if (entry) {
+      const displayName = this._getDisplayName(entry);
+      const files = await this.backup.listBackupFiles(displayName, backupDir);
+      if (files.length > 0) return files;
+    }
+    // Fallback: scan all game dirs for a matching backup
+    const fsp = require('fs/promises');
+    const gameSavesDir = path.join(this.configDir, 'game-saves');
+    try {
+      const dirs = await fsp.readdir(gameSavesDir, { withFileTypes: true });
+      for (const d of dirs) {
+        if (!d.isDirectory() || d.name.startsWith('_') || d.name.startsWith('.')) continue;
+        const backupPath = path.join(gameSavesDir, d.name, 'backups', backupDir);
+        if (fs.existsSync(backupPath)) {
+          return this.backup.listBackupFiles(d.name, backupDir);
+        }
+      }
+    } catch {}
+    return [];
   }
 
   /**
