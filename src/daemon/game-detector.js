@@ -252,60 +252,106 @@ class GameDetector extends EventEmitter {
   }
 
   /**
-   * Do a one-time scan of all watched directories to find existing games.
-   * Used on startup to populate the game library.
+   * Do a one-time scan to find existing games.
+   *
+   * Strategy 1: For every known game in the DB, check if its save path exists on disk.
+   * Strategy 2: Scan LocalLow for Unity games (Company/Game/ pattern).
+   * Strategy 3: Scan for engine-specific directories (RenPy/, Godot/, etc.)
    */
   async scanExistingGames() {
+    const roots = this.gameDB.resolveRoots();
     const enabledDirs = this.config.data.settings?.gameSaveScanDirs;
-    const watchDirs = this.gameDB.getWatchDirs(enabledDirs);
+    const enabledSet = new Set(enabledDirs || Object.keys(roots));
     const found = new Map(); // gameId -> { game, saveBase, rootKey, isHeuristic }
 
-    for (const { key, path: rootDir } of watchDirs) {
+    // Strategy 1: Check every known game's save path
+    for (const game of this.gameDB.getAllGames()) {
+      for (const sp of game.savePaths) {
+        if (!enabledSet.has(sp.root)) continue;
+        const rootDir = roots[sp.root];
+        if (!rootDir) continue;
+
+        const saveDir = path.join(rootDir, sp.pattern);
+        try {
+          await fsp.access(saveDir);
+          found.set(game.id, {
+            game,
+            saveBase: saveDir,
+            rootKey: sp.root,
+            isHeuristic: false,
+          });
+        } catch {} // Doesn't exist — skip
+      }
+    }
+
+    // Strategy 2: Scan LocalLow for Unity games (Company/Game/)
+    if (enabledSet.has('appdata_locallow') && roots.appdata_locallow) {
       try {
-        const entries = await fsp.readdir(rootDir, { withFileTypes: true });
-        for (const entry of entries) {
-          if (!entry.isDirectory()) continue;
+        const companies = await fsp.readdir(roots.appdata_locallow, { withFileTypes: true });
+        for (const company of companies) {
+          if (!company.isDirectory()) continue;
+          if (this.gameDB.isBlocklisted(path.join(roots.appdata_locallow, company.name), 'appdata_locallow')) continue;
 
-          const dirPath = path.join(rootDir, entry.name);
-
-          // Check blocklist
-          if (this.gameDB.isBlocklisted(dirPath, key)) continue;
-
-          // Check known games — try matching a synthetic path inside this dir
-          const testPath = path.join(dirPath, '__probe__');
-          const match = this.gameDB.matchPath(testPath);
-          if (match) {
-            found.set(match.game.id, {
-              game: match.game,
-              saveBase: match.saveBase,
-              rootKey: key,
-              isHeuristic: false,
-            });
-            continue;
-          }
-
-          // For deeper matches, scan one level down
           try {
-            const subEntries = await fsp.readdir(dirPath, { withFileTypes: true });
-            for (const sub of subEntries) {
-              const subPath = path.join(dirPath, sub.name, sub.isDirectory() ? '__probe__' : '');
-              const subMatch = this.gameDB.matchPath(sub.isDirectory() ? subPath : path.join(dirPath, sub.name));
-              if (subMatch) {
-                found.set(subMatch.game.id, {
-                  game: subMatch.game,
-                  saveBase: subMatch.saveBase,
-                  rootKey: key,
-                  isHeuristic: false,
+            const games = await fsp.readdir(path.join(roots.appdata_locallow, company.name), { withFileTypes: true });
+            for (const gameDir of games) {
+              if (!gameDir.isDirectory()) continue;
+              const saveBase = path.join(roots.appdata_locallow, company.name, gameDir.name);
+              const id = `unity-${company.name}-${gameDir.name}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+              if (!found.has(id)) {
+                found.set(id, {
+                  game: { id, name: gameDir.name, confidence: 'engine', engine: 'Unity' },
+                  saveBase,
+                  rootKey: 'appdata_locallow',
+                  isHeuristic: true,
                 });
               }
             }
           } catch {}
         }
-      } catch (err) {
-        console.error(`Failed to scan ${rootDir}: ${err.message}`);
-      }
+      } catch {}
     }
 
+    // Strategy 3: Engine directories in Roaming
+    if (enabledSet.has('appdata_roaming') && roots.appdata_roaming) {
+      // Ren'Py: Roaming/RenPy/<game>/
+      const renpyDir = path.join(roots.appdata_roaming, 'RenPy');
+      try {
+        const entries = await fsp.readdir(renpyDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue;
+          const id = `renpy-${entry.name}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+          if (!found.has(id)) {
+            found.set(id, {
+              game: { id, name: entry.name, confidence: 'engine', engine: "Ren'Py" },
+              saveBase: path.join(renpyDir, entry.name),
+              rootKey: 'appdata_roaming',
+              isHeuristic: true,
+            });
+          }
+        }
+      } catch {}
+
+      // Godot: Roaming/Godot/app_userdata/<project>/
+      const godotDir = path.join(roots.appdata_roaming, 'Godot', 'app_userdata');
+      try {
+        const entries = await fsp.readdir(godotDir, { withFileTypes: true });
+        for (const entry of entries) {
+          if (!entry.isDirectory()) continue;
+          const id = `godot-${entry.name}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+          if (!found.has(id)) {
+            found.set(id, {
+              game: { id, name: entry.name, confidence: 'engine', engine: 'Godot' },
+              saveBase: path.join(godotDir, entry.name),
+              rootKey: 'appdata_roaming',
+              isHeuristic: true,
+            });
+          }
+        }
+      } catch {}
+    }
+
+    console.log(`Scan found ${found.size} game(s)`);
     return Array.from(found.values());
   }
 }
