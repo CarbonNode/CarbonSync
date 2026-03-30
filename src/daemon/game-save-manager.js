@@ -27,8 +27,14 @@ class GameSaveManager extends EventEmitter {
     this.gameDB = new GameDB(config);
     this.detector = new GameDetector({ gameDB: this.gameDB, config });
     this.backup = new GameBackup({ configDir, config });
-    this._library = new Map(); // gameId -> library entry
-    this._libraryPath = path.join(configDir, 'game-saves', '_library.json');
+    this._library = new Map();
+    // Store library in config dir (NOT in game-saves sync folder — avoids overwrite race)
+    this._libraryPath = path.join(configDir, '_game-library.json');
+    // Migrate from old location if exists
+    const oldPath = path.join(configDir, 'game-saves', '_library.json');
+    if (!fs.existsSync(this._libraryPath) && fs.existsSync(oldPath)) {
+      try { fs.copyFileSync(oldPath, this._libraryPath); } catch {}
+    }
     this._running = false;
     this._recentlyRestored = new Map(); // absPath -> timestamp (skip detector feedback loop)
   }
