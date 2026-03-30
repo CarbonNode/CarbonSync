@@ -111,6 +111,7 @@ function renderFolders(folders) {
             <option value="push" ${dir==='push'?'selected':''}>⬆ Push to Hub</option>
             <option value="receive" ${dir==='receive'?'selected':''}>⬇ Receive from Hub</option>
           </select>
+          <span class="open-folder-btn" onclick="openFolder('${escA(f.path)}')" title="Open folder">&#128194;</span>
           <button class="btn sm ghost" onclick="openFolderSettings('${escA(f.name)}')">⚙</button>
           <button class="btn sm ghost" onclick="rescanFolder('${escA(f.name)}')">Rescan</button>
           <button class="btn sm red" onclick="removeFolder('${escA(f.path)}')">Remove</button>
