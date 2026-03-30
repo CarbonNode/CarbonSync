@@ -65,7 +65,16 @@
     "**/*.log",
     "**/*.tmp",
     "**/*.etl",
-    "**/*.pf"
+    "**/*.pf",
+    "**/Player.log",
+    "**/Player-prev.log",
+    "**/steam_autocloud.vdf",
+    "**/eventcache",
+    "**/Unity/*/Analytics/**",
+    "**/Unity/ShaderVariantAnalytics/**",
+    "**/Unity/**/ArchivedEvents/**",
+    "**/ShaderCache/**",
+    "**/output_log.txt"
   ],
   "blockedGameIds": [
     "unity-arvus-games-backups",

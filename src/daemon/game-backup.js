@@ -205,8 +205,15 @@ class GameBackup {
     for (const entry of entries) {
       const srcPath = path.join(src, entry.name);
 
-      // Skip meta files and temp files
-      if (entry.name.startsWith('_meta') || entry.name.endsWith('.tmp') || entry.name.endsWith('.partial')) {
+      // Skip junk files — not needed for save restore
+      const n = entry.name;
+      const nl = n.toLowerCase();
+      if (n.startsWith('_meta') || nl.endsWith('.tmp') || nl.endsWith('.partial')) continue;
+      if (nl === 'player.log' || nl === 'player-prev.log' || nl === 'output_log.txt') continue;
+      if (nl === 'steam_autocloud.vdf' || nl === 'eventcache') continue;
+      if (nl.endsWith('.log')) continue;
+      if (n === 'Unity' || n === 'ShaderCache') {
+        // Skip Unity analytics/shader dirs entirely
         continue;
       }
 
