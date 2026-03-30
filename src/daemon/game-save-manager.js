@@ -53,6 +53,9 @@ class GameSaveManager extends EventEmitter {
     // Load synced dismissed list (from game-saves folder, shared across peers)
     await this._loadSyncedDismissals();
 
+    // One-time migration: move hardcoded blockedGameIds from blocklist.json into config
+    this._migrateBlocklistIds();
+
     // Wire up detector events
     this.detector.on('save-changed', async (info) => {
       await this._handleSaveChanged(info);
@@ -360,30 +363,46 @@ class GameSaveManager extends EventEmitter {
     }
   }
 
-  _getMergedDismissals() {
-    const set = new Set(this.config.data.gameSaveBlockedGames || []);
-    // Also include global blocklist from app data
+  _migrateBlocklistIds() {
     try {
       const blocklist = require('../data/blocklist.json');
-      if (blocklist.blockedGameIds) {
-        for (const id of blocklist.blockedGameIds) set.add(id);
+      if (!blocklist.blockedGameIds || blocklist.blockedGameIds.length === 0) return;
+      if (!this.config.data.gameSaveBlockedGames) this.config.data.gameSaveBlockedGames = [];
+      let migrated = 0;
+      for (const id of blocklist.blockedGameIds) {
+        if (!this.config.data.gameSaveBlockedGames.includes(id)) {
+          this.config.data.gameSaveBlockedGames.push(id);
+          migrated++;
+        }
+      }
+      if (migrated > 0) {
+        this.config.save();
+        console.log(`Migrated ${migrated} blocked game IDs from blocklist.json to config`);
       }
     } catch {}
+  }
+
+  _getMergedDismissals() {
+    // Union of: local config dismissals + synced _dismissed.json
+    // Both sources merge — if ANY PC dismisses a game, it stays dismissed everywhere
+    const set = new Set(this.config.data.gameSaveBlockedGames || []);
+    // Synced dismissals were loaded into config on startup (_loadSyncedDismissals)
+    // so they're already in gameSaveBlockedGames. This is the single source of truth.
     return set;
   }
 
   _isBlockedByName(name) {
     if (!name) return true;
-    // Block any entry with .Conflict or .conflict in the name
-    if (name.toLowerCase().includes('.conflict') || name.toLowerCase().includes('conflict')) {
-      if (name.includes('.Conflict') || name.includes('summertimesaga.Conflict')) return true;
-    }
-    try {
-      const blocklist = require('../data/blocklist.json');
-      if (blocklist.blockedGameNames) {
-        return blocklist.blockedGameNames.includes(name);
-      }
-    } catch {}
+    const nl = name.toLowerCase();
+    // Block obvious non-game names
+    const junkNames = [
+      '_gsdata_', 'backups', 'config', 'saved', 'temporary', 'browser',
+      'caches', 'crashreports', 'editor', 'temp', '_saved_', '.sync',
+      'persistent', 'tokens', 'packages', 'my games', 'programs',
+      'publishers', 'user data', 'my project', '[unnamed project]',
+    ];
+    if (junkNames.includes(nl)) return true;
+    if (nl.includes('.conflict')) return true;
     return false;
   }
 
@@ -795,25 +814,78 @@ class GameSaveManager extends EventEmitter {
    */
   _startSyncWatcher() {
     const gameSavesDir = path.join(this.configDir, 'game-saves');
-    let debounceTimer = null;
+    let restoreTimer = null;
+    let libraryTimer = null;
 
     try {
       const watcher = require('@parcel/watcher');
       watcher.subscribe(gameSavesDir, (err, events) => {
         if (err) return;
-        // Only care about changes inside current/ dirs (sync updates)
-        const hasCurrent = events.some(e => e.path.includes(`${path.sep}current${path.sep}`) || e.path.includes('/current/'));
-        if (!hasCurrent) return;
 
-        // Debounce — sync may update many files at once
-        if (debounceTimer) clearTimeout(debounceTimer);
-        debounceTimer = setTimeout(() => this.autoRestoreAll(), 3000);
-      }, {
-        ignore: ['**/backups/**'],
+        // Check for current/ changes (auto-restore trigger)
+        const hasCurrent = events.some(e =>
+          e.path.includes(`${path.sep}current${path.sep}`) || e.path.includes('/current/'));
+        if (hasCurrent) {
+          if (restoreTimer) clearTimeout(restoreTimer);
+          restoreTimer = setTimeout(() => this.autoRestoreAll(), 3000);
+        }
+
+        // Check for new game directories or _dismissed.json changes (library update)
+        const hasNewGame = events.some(e =>
+          e.path.includes(`${path.sep}_game.json`) ||
+          e.path.includes(`${path.sep}_dismissed.json`));
+        if (hasNewGame) {
+          if (libraryTimer) clearTimeout(libraryTimer);
+          libraryTimer = setTimeout(() => this._syncLibraryFromBackups(), 3000);
+        }
       }).then(sub => {
         this._syncWatcherSub = sub;
       }).catch(() => {});
     } catch {}
+  }
+
+  /**
+   * Scan the game-saves directory for game folders that arrived via sync
+   * but aren't in the library yet. Also reload dismissed list.
+   */
+  async _syncLibraryFromBackups() {
+    // Reload dismissed list from synced file
+    await this._loadSyncedDismissals();
+    const dismissed = this._getMergedDismissals();
+
+    // Scan game-saves for _game.json files
+    const backedUp = await this.backup.listBackedUpGames();
+    let added = 0;
+    for (const game of backedUp) {
+      if (dismissed.has(game.id)) continue;
+      if (this._isBlockedByName(game.name)) continue;
+      if (!this._library.has(game.id)) {
+        this._library.set(game.id, {
+          id: game.id,
+          name: game.name,
+          displayName: game.displayName || game.name,
+          saveBase: game.saveBase,
+          enabled: game.enabled !== false,
+          isHeuristic: false,
+          running: false,
+          lastBackup: game.lastBackup,
+          backupCount: game.backupCount,
+          excludes: game.excludes || [],
+          knownDevices: {},
+        });
+        added++;
+      }
+    }
+
+    // Remove dismissed games
+    for (const id of dismissed) {
+      this._library.delete(id);
+    }
+
+    if (added > 0) {
+      console.log(`Sync library update: ${added} new game(s) from synced backups`);
+      await this._saveLibrary();
+    }
   }
 
   /**
