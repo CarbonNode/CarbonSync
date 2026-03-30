@@ -42,8 +42,7 @@ async function refresh() {
   try { currentStatus = await api.getStatus(); } catch { return; }
   const s = currentStatus;
 
-  const role = s.isHub ? 'Hub' : (s.hubConnected ? `Connected to hub` : 'Disconnected from hub');
-  document.getElementById('subtitle').textContent = `${s.deviceName || 'Starting...'} — ${role}`;
+  document.getElementById('subtitle').textContent = s.deviceName || 'Starting...';
   document.getElementById('port').textContent = s.port || '—';
   document.getElementById('clients').textContent = s.connectedClients || 0;
   document.getElementById('tls-status').innerHTML = s.tlsEnabled
@@ -295,21 +294,6 @@ function renderSettings(s) {
 }
 
 function setupSettings() {
-  document.getElementById('btn-save-hub').addEventListener('click', async () => {
-    const addr = document.getElementById('set-hub-address').value.trim();
-    const key = document.getElementById('set-hub-key').value.trim();
-    const status = document.getElementById('hub-status');
-    await api.setHubConnection(addr, key);
-    if (addr) {
-      status.textContent = `Connecting to ${addr}...`;
-      toast(`Hub set to ${addr}`, 'success');
-    } else {
-      status.textContent = 'This PC is the hub';
-      toast('Running as hub', 'info');
-    }
-    refresh();
-  });
-
   document.getElementById('btn-save-name').addEventListener('click', async () => {
     const name = document.getElementById('set-device-name').value.trim();
     if (name) {
@@ -356,14 +340,6 @@ function setupSettings() {
     document.getElementById('set-concurrent').value = s.maxConcurrentTransfers || 4;
     document.getElementById('set-port').value = cfg.port || 21547;
     document.getElementById('set-device-name').value = cfg.deviceName || '';
-    document.getElementById('set-hub-address').value = cfg.hubAddress || '';
-    document.getElementById('set-hub-key').value = cfg.hubApiKey || '';
-    const hubStatus = document.getElementById('hub-status');
-    if (cfg.hubAddress) {
-      hubStatus.innerHTML = `<span style="color:var(--accent)">Syncing with hub: ${esc(cfg.hubAddress)}</span>`;
-    } else {
-      hubStatus.innerHTML = `<span style="color:var(--green)">&#10004; This PC is the hub — other PCs connect to this one</span>`;
-    }
   });
   api.checkUpdate().then(r => {
     document.getElementById('current-version').textContent = r.current || '—';
