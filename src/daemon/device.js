@@ -71,6 +71,16 @@ class CarbonSyncDevice extends EventEmitter {
       const folderConfig = this.config.folders.find(f => f.name === folder);
       const direction = folderConfig?.direction || 'both';
 
+      // Game Saves folder is managed by GameSaveManager — don't flood the activity feed
+      // Only emit once per batch, not per file
+      if (folderConfig?.internal) {
+        // Silently handle without spamming — just push to peers quietly
+        if ((direction === 'push' || direction === 'both') && this.hubConnection?.authenticated) {
+          this._queuePush(folder, changes);
+        }
+        return;
+      }
+
       // Filter out files we just wrote (from incoming pushes/pulls)
       const filtered = changes.filter(c => {
         const key = `${folder}/${c.path}`;
