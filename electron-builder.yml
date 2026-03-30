@@ -12,7 +12,7 @@ win:
 nsis:
   oneClick: true
   runAfterFinish: true
-  deleteAppDataOnUninstall: true
+  deleteAppDataOnUninstall: false
   shortcutName: CarbonSync
 files:
   - src/**/*

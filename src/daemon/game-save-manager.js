@@ -64,19 +64,12 @@ class GameSaveManager extends EventEmitter {
       this.emit('game-running', info);
     });
 
-    // Only scan if library is empty (fresh install / first run)
-    // Otherwise trust the persisted library — user can rescan manually
+    // Auto-scan if library is empty — don't block startup, run in background
     if (this._library.size === 0) {
-      console.log('No cached library — scanning for game saves...');
-      const dismissed = this._getMergedDismissals();
-      const existing = await this.detector.scanExistingGames();
-      for (const { game, saveBase, rootKey, isHeuristic } of existing) {
-        if (dismissed.has(game.id)) continue;
-        if (this._isBlockedByName(game.name)) continue;
-        this._ensureLibraryEntry(game, saveBase, rootKey, isHeuristic);
-      }
+      console.log('No cached library — auto-scanning for game saves in background...');
+      this._autoScan().catch(err => console.error('Auto-scan failed:', err.message));
     } else {
-      console.log(`Loaded ${this._library.size} games from cache — skipping scan`);
+      console.log(`Loaded ${this._library.size} games from cache`);
     }
 
     // Also load games from backed up data
@@ -139,6 +132,21 @@ class GameSaveManager extends EventEmitter {
 
     // Auto-restore any saves that are newer from sync (initial check)
     setTimeout(() => this.autoRestoreAll(), 5000);
+  }
+
+  async _autoScan() {
+    const dismissed = this._getMergedDismissals();
+    const existing = await this.detector.scanExistingGames();
+    for (const { game, saveBase, rootKey, isHeuristic } of existing) {
+      if (dismissed.has(game.id)) continue;
+      if (this._isBlockedByName(game.name)) continue;
+      this._ensureLibraryEntry(game, saveBase, rootKey, isHeuristic);
+    }
+    if (this._library.size > 0) {
+      await this._saveLibrary();
+      console.log(`Auto-scan found ${this._library.size} games`);
+      this.emit('library-updated');
+    }
   }
 
   async stop() {

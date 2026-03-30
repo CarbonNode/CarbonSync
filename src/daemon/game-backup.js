@@ -511,7 +511,7 @@ class GameBackup {
       }
     };
 
-    await walk(this.baseDir);
+    await walk(this.gameSavesDir);
     console.log(`Cleaned ${removed} junk files/dirs from backups`);
     return { removed };
   }
