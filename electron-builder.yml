@@ -18,5 +18,10 @@ files:
   - src/**/*
   - assets/**/*
   - package.json
+extraResources:
+  - from: assets/icon.ico
+    to: icon.ico
+  - from: assets/icon.png
+    to: icon.png
 extraMetadata:
   main: src/ui/main.js

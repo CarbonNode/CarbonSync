@@ -19,7 +19,12 @@ if (process.platform === 'win32') {
 app.setPath('userData', path.join(app.getPath('appData'), 'CarbonSync'));
 
 const configDir = path.join(os.homedir(), '.carbonsync');
-const iconPath = path.join(__dirname, '..', '..', 'assets', 'icon.ico');
+// Icon: try extraResources (outside asar) first, fallback to asar path
+const iconPath = (() => {
+  const extra = path.join(process.resourcesPath || '', 'icon.ico');
+  if (require('fs').existsSync(extra)) return extra;
+  return path.join(__dirname, '..', '..', 'assets', 'icon.ico');
+})();
 let tray = null;
 let mainWindow = null;
 let server = null;
