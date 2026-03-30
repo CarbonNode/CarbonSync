@@ -51,6 +51,11 @@
     <!-- Devices Tab -->
     <div class="tab-pane" id="tab-devices">
       <div id="devices-list"></div>
+      <div style="margin-top:12px; display:flex; gap:6px; align-items:center;">
+        <input type="text" id="peer-ip" placeholder="IP address (e.g. 192.168.0.177)" style="flex:1; background:var(--bg); border:1px solid var(--border); border-radius:5px; padding:7px 10px; color:var(--text); font-size:13px; outline:none;">
+        <input type="number" id="peer-port" placeholder="21547" value="21547" style="width:80px; background:var(--bg); border:1px solid var(--border); border-radius:5px; padding:7px 10px; color:var(--text); font-size:13px; outline:none;">
+        <button class="btn" id="btn-add-peer">Add Peer</button>
+      </div>
     </div>
 
     <!-- Settings Tab -->

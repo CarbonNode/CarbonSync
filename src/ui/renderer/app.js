@@ -9,6 +9,7 @@ async function init() {
   setupTabs();
   setupFolderActions();
   setupDragDrop();
+  setupDevices();
   setupSettings();
   setupLiveEvents();
   await refresh();
@@ -196,6 +197,27 @@ function renderSettings(s) {
   document.getElementById('fp-display').textContent = cfg.fingerprint || '—';
   document.getElementById('key-display').textContent = cfg.apiKey || '—';
   document.getElementById('device-id').textContent = cfg.deviceId || '—';
+}
+
+function setupDevices() {
+  document.getElementById('btn-add-peer').addEventListener('click', async () => {
+    const ip = document.getElementById('peer-ip').value.trim();
+    const port = parseInt(document.getElementById('peer-port').value) || 21547;
+    if (!ip) { toast('Enter an IP address', 'error'); return; }
+
+    const btn = document.getElementById('btn-add-peer');
+    btn.disabled = true; btn.textContent = 'Connecting...';
+    const result = await api.addPeer(ip, port);
+    btn.disabled = false; btn.textContent = 'Add Peer';
+
+    if (result.error) {
+      toast(result.error, 'error');
+    } else {
+      toast(`Connected to ${ip}:${port}`, 'success');
+      document.getElementById('peer-ip').value = '';
+      refresh();
+    }
+  });
 }
 
 function setupSettings() {
