@@ -38,17 +38,22 @@ class GameBackup {
 
   /**
    * Backup a game's saves.
-   * Copies all files from saveBase into current/ and creates a timestamped backup.
+   *
+   * Always updates current/ (for real-time sync).
+   * Only creates a timestamped version if enough time has passed since the last
+   * backup (default 5 min) — prevents spam during long play sessions with
+   * frequent auto-saves. Force=true bypasses the cooldown (manual "Backup Now").
    *
    * @param {object} opts
    * @param {string} opts.gameId
    * @param {string} opts.gameName — display name
    * @param {string} opts.saveBase — absolute path to the game's save directory
-   * @param {string[]} opts.changedPaths — specific files that changed (optional, backs up entire saveBase)
+   * @param {string[]} opts.changedPaths — specific files that changed (optional)
    * @param {string} opts.sourceDevice — device name that created this save
-   * @returns {{ backupDir: string, fileCount: number, totalSize: number, timestamp: string }}
+   * @param {boolean} opts.force — bypass cooldown (for manual backups)
+   * @returns {{ backupDir: string|null, fileCount: number, totalSize: number, timestamp: string, currentOnly: boolean }}
    */
-  async backupGame({ gameId, gameName, saveBase, changedPaths, sourceDevice }) {
+  async backupGame({ gameId, gameName, saveBase, changedPaths, sourceDevice, force }) {
     const dir = this.gameDir(gameName);
     const currentDir = path.join(dir, 'current');
     const backupsDir = path.join(dir, 'backups');
@@ -56,29 +61,48 @@ class GameBackup {
     await fsp.mkdir(currentDir, { recursive: true });
     await fsp.mkdir(backupsDir, { recursive: true });
 
+    // Always update current/ (keeps sync up to date)
+    let fileCount = 0;
+    let totalSize = 0;
+    try {
+      const result = await this._copyDirSingle(saveBase, currentDir);
+      fileCount = result.fileCount;
+      totalSize = result.totalSize;
+    } catch (err) {
+      console.error(`Failed to update current/ for ${gameName}: ${err.message}`);
+      throw err;
+    }
+
+    if (fileCount === 0) return null;
+
+    // Update game metadata
+    await this._updateGameMeta(dir, { gameId, gameName, saveBase });
+
+    // Smart cooldown: skip versioned backup only if content hasn't changed.
+    // If the save is different from the last backup, ALWAYS version it
+    // (covers: quick shutdown, switching PCs, etc.)
+    // If content is identical, use time-based cooldown to avoid spam.
+    const cooldownMs = (this.config.data.settings?.gameSaveBackupCooldownMin || 5) * 60 * 1000;
+    const lastBackupTime = await this._getLastBackupTime(backupsDir);
+    const elapsed = Date.now() - (lastBackupTime || 0);
+    const contentChanged = await this._hasContentChanged(currentDir, backupsDir);
+
+    if (!force && lastBackupTime && elapsed < cooldownMs && !contentChanged) {
+      // Same content, too recent — current/ is updated for sync, skip version
+      return { backupDir: null, fileCount, totalSize, timestamp: new Date().toISOString(), currentOnly: true };
+    }
+
+    // Create timestamped versioned backup
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
     const backupDir = path.join(backupsDir, timestamp);
     await fsp.mkdir(backupDir, { recursive: true });
 
-    // Copy entire saveBase to current/ and backup/
-    let fileCount = 0;
-    let totalSize = 0;
-
     try {
-      const result = await this._copyDir(saveBase, currentDir, backupDir);
-      fileCount = result.fileCount;
-      totalSize = result.totalSize;
+      await this._copyDirSingle(saveBase, backupDir);
     } catch (err) {
-      console.error(`Backup failed for ${gameName}: ${err.message}`);
-      // Cleanup empty backup dir
       try { await fsp.rm(backupDir, { recursive: true }); } catch {}
-      throw err;
-    }
-
-    if (fileCount === 0) {
-      // No files to back up, remove empty dirs
-      try { await fsp.rm(backupDir, { recursive: true }); } catch {}
-      return null;
+      // current/ was still updated, so sync works — just no version created
+      return { backupDir: null, fileCount, totalSize, timestamp: new Date().toISOString(), currentOnly: true };
     }
 
     // Write backup metadata
@@ -92,13 +116,28 @@ class GameBackup {
     };
     await fsp.writeFile(path.join(backupDir, '_meta.json'), JSON.stringify(meta, null, 2));
 
-    // Update game metadata
-    await this._updateGameMeta(dir, { gameId, gameName, saveBase });
-
     // Enforce retention
     await this._enforceRetention(backupsDir);
 
-    return { backupDir, fileCount, totalSize, timestamp };
+    return { backupDir, fileCount, totalSize, timestamp, currentOnly: false };
+  }
+
+  async _getLastBackupTime(backupsDir) {
+    try {
+      const entries = await fsp.readdir(backupsDir, { withFileTypes: true });
+      const dirs = entries.filter(e => e.isDirectory() && !e.name.startsWith('.')).map(e => e.name).sort();
+      if (dirs.length === 0) return null;
+      const latest = dirs[dirs.length - 1];
+      const metaPath = path.join(backupsDir, latest, '_meta.json');
+      try {
+        const meta = JSON.parse(await fsp.readFile(metaPath, 'utf-8'));
+        return new Date(meta.timestamp).getTime();
+      } catch {
+        return null;
+      }
+    } catch {
+      return null;
+    }
   }
 
   /**
