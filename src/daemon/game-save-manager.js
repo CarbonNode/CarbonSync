@@ -126,11 +126,8 @@ class GameSaveManager extends EventEmitter {
       }
     }
 
-    // Only save if we actually have entries — don't overwrite a synced
-    // library with an empty one (this PC may have no local games)
-    if (this._library.size > 0) {
-      await this._saveLibrary();
-    }
+    // Always save library state (even if empty — prevents stale data on next load)
+    await this._saveLibrary();
     console.log(`Found ${this._library.size} game(s)`);
 
     // Start watching for changes
@@ -298,15 +295,19 @@ class GameSaveManager extends EventEmitter {
 
   async _loadLibrary() {
     try {
+      console.log(`Loading game library from: ${this._libraryPath}`);
       const raw = await fsp.readFile(this._libraryPath, 'utf-8');
       const data = JSON.parse(raw);
-      if (data.games) {
+      if (data.games && data.games.length > 0) {
         for (const game of data.games) {
           this._library.set(game.id, { ...game, running: false });
         }
+        console.log(`Loaded ${this._library.size} games from library`);
+      } else {
+        console.log('Library file exists but has no games');
       }
-    } catch {
-      // No library yet
+    } catch (err) {
+      console.log(`No game library found: ${err.message}`);
     }
   }
 
@@ -408,6 +409,7 @@ class GameSaveManager extends EventEmitter {
     }
 
     const data = { version: 1, lastUpdated: new Date().toISOString(), games };
+    console.log(`Saving ${games.length} games to: ${this._libraryPath}`);
     try {
       const dir = path.dirname(this._libraryPath);
       await fsp.mkdir(dir, { recursive: true });
