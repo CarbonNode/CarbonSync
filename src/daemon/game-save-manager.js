@@ -89,7 +89,11 @@ class GameSaveManager extends EventEmitter {
       this._library.delete(id);
     }
 
-    await this._saveLibrary();
+    // Only save if we actually have entries — don't overwrite a synced
+    // library with an empty one (this PC may have no local games)
+    if (this._library.size > 0) {
+      await this._saveLibrary();
+    }
     console.log(`Found ${this._library.size} game(s)`);
 
     // Start watching for changes
@@ -123,11 +127,15 @@ class GameSaveManager extends EventEmitter {
     const overrides = this.config.data.gameSaveGameOverrides?.[gameId];
     if (overrides?.enabled === false) return;
 
-    // Heuristic games need confirmation before backing up
-    const confirmedGames = this.config.data.gameSaveConfirmedGames || [];
-    if (isHeuristic && !confirmedGames.includes(gameId)) {
-      this.emit('game-detected', { game: entry, isHeuristic: true, needsConfirmation: true });
-      return;
+    // Engine-detected and known DB games auto-backup without confirmation.
+    // Only low-confidence heuristics (generic save-extension matches) need confirmation.
+    const confidence = game.confidence || (isHeuristic ? 'heuristic' : 'known');
+    if (confidence === 'heuristic') {
+      const confirmedGames = this.config.data.gameSaveConfirmedGames || [];
+      if (!confirmedGames.includes(gameId)) {
+        this.emit('game-detected', { game: entry, isHeuristic: true, needsConfirmation: true });
+        return;
+      }
     }
 
     // Apply exclusion rules
@@ -259,22 +267,33 @@ class GameSaveManager extends EventEmitter {
   }
 
   async _saveLibrary() {
-    const data = {
-      version: 1,
-      lastUpdated: new Date().toISOString(),
-      games: Array.from(this._library.values()).map(g => ({
-        id: g.id,
-        name: g.name,
-        displayName: g.displayName,
-        saveBase: g.saveBase,
-        rootKey: g.rootKey,
-        enabled: g.enabled,
-        isHeuristic: g.isHeuristic,
-        lastBackup: g.lastBackup,
-        backupCount: g.backupCount,
-        excludes: g.excludes,
-      })),
-    };
+    const games = Array.from(this._library.values()).map(g => ({
+      id: g.id,
+      name: g.name,
+      displayName: g.displayName,
+      saveBase: g.saveBase,
+      rootKey: g.rootKey,
+      enabled: g.enabled,
+      isHeuristic: g.isHeuristic,
+      lastBackup: g.lastBackup,
+      backupCount: g.backupCount,
+      excludes: g.excludes,
+    }));
+
+    // Safety: don't overwrite a populated library with empty data
+    // (protects synced library from being wiped by a PC with no local games)
+    if (games.length === 0) {
+      try {
+        const existing = await fsp.readFile(this._libraryPath, 'utf-8');
+        const parsed = JSON.parse(existing);
+        if (parsed.games && parsed.games.length > 0) {
+          console.log('Skipping library save — would overwrite synced data with empty');
+          return;
+        }
+      } catch {} // File doesn't exist — fine to write empty
+    }
+
+    const data = { version: 1, lastUpdated: new Date().toISOString(), games };
     try {
       const dir = path.dirname(this._libraryPath);
       await fsp.mkdir(dir, { recursive: true });
