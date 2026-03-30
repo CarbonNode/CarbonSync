@@ -263,12 +263,40 @@ function renderDevices(devices) {
   `).join('');
 }
 
-async function renamePeer(hostname, currentName) {
-  const newName = prompt('Rename device:', currentName);
-  if (newName && newName !== currentName) {
-    await api.renamePeer(hostname, newName);
-    toast(`Renamed to: ${newName}`, 'success');
-    refresh();
+function renamePeer(hostname, currentName) {
+  // Show inline rename input
+  const el = document.getElementById('devices-list');
+  const cards = el.querySelectorAll('.device-card');
+  for (const card of cards) {
+    const nameEl = card.querySelector('.device-name span');
+    if (!nameEl) continue;
+    const btn = card.querySelector('.rename-btn');
+    if (btn && btn.dataset.hostname === hostname) {
+      // Replace name with input
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.value = currentName;
+      input.style.cssText = 'background:var(--bg);border:1px solid var(--accent);border-radius:4px;padding:3px 8px;color:var(--text);font-size:13px;width:180px;outline:none;';
+      nameEl.replaceWith(input);
+      input.focus();
+      input.select();
+
+      const save = async () => {
+        const newName = input.value.trim();
+        if (newName && newName !== currentName) {
+          await api.renamePeer(hostname, newName);
+          toast(`Renamed to: ${newName}`, 'success');
+        }
+        refresh();
+      };
+
+      input.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') save();
+        if (e.key === 'Escape') refresh();
+      });
+      input.addEventListener('blur', save);
+      break;
+    }
   }
 }
 
@@ -498,7 +526,9 @@ async function loadGameHistory(gameId) {
   try {
     const history = await api.getSaveHistory(gameId);
     if (history.length === 0) {
-      el.innerHTML = '<div class="empty" style="padding:8px 0;">No backups yet</div>';
+      const game = gameLibrary.find(g => g.id === gameId);
+      const savePath = game?.saveBase ? `<div class="save-path-hint">${esc(game.saveBase)}</div>` : '';
+      el.innerHTML = `<div class="empty" style="padding:8px 0;">No backups yet — play the game or click &#8635; to backup now</div>${savePath}`;
       return;
     }
 

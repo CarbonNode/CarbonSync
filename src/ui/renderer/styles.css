@@ -454,6 +454,11 @@ body {
   font-weight: 600;
 }
 
+.save-path-hint {
+  font-size: 10px; color: #444; font-family: 'Consolas', monospace;
+  padding: 2px 0 4px 0; word-break: break-all;
+}
+
 /* Scan dirs panel */
 .scan-dirs-panel {
   margin-bottom: 10px;

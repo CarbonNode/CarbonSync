@@ -43,6 +43,9 @@ class GameSaveManager extends EventEmitter {
     // Load persisted library
     await this._loadLibrary();
 
+    // Load synced dismissed list (from game-saves folder, shared across peers)
+    await this._loadSyncedDismissals();
+
     // Wire up detector events
     this.detector.on('save-changed', async (info) => {
       await this._handleSaveChanged(info);
@@ -54,7 +57,7 @@ class GameSaveManager extends EventEmitter {
       this.emit('game-running', info);
     });
 
-    // Scan for existing games on startup
+    // Always scan on startup — library file may not survive reinstalls
     console.log('Scanning for existing game saves...');
     const existing = await this.detector.scanExistingGames();
     for (const { game, saveBase, rootKey, isHeuristic } of existing) {
@@ -78,6 +81,12 @@ class GameSaveManager extends EventEmitter {
           excludes: game.excludes || [],
         });
       }
+    }
+
+    // Remove any games that were dismissed (locally or by peers)
+    const allDismissed = this._getMergedDismissals();
+    for (const id of allDismissed) {
+      this._library.delete(id);
     }
 
     await this._saveLibrary();
@@ -196,6 +205,51 @@ class GameSaveManager extends EventEmitter {
     } catch {
       // No library yet
     }
+  }
+
+  /**
+   * Load dismissed games list from the game-saves folder (synced across peers).
+   * This file lives alongside _library.json so it gets synced.
+   */
+  async _loadSyncedDismissals() {
+    const dismissPath = path.join(this.configDir, 'game-saves', '_dismissed.json');
+    try {
+      const raw = await fsp.readFile(dismissPath, 'utf-8');
+      const data = JSON.parse(raw);
+      // Merge synced dismissals into local config
+      if (data.dismissed && Array.isArray(data.dismissed)) {
+        if (!this.config.data.gameSaveBlockedGames) {
+          this.config.data.gameSaveBlockedGames = [];
+        }
+        for (const id of data.dismissed) {
+          if (!this.config.data.gameSaveBlockedGames.includes(id)) {
+            this.config.data.gameSaveBlockedGames.push(id);
+          }
+        }
+      }
+    } catch {
+      // No synced dismissals yet
+    }
+  }
+
+  async _saveSyncedDismissals() {
+    const dismissPath = path.join(this.configDir, 'game-saves', '_dismissed.json');
+    const dismissed = this.config.data.gameSaveBlockedGames || [];
+    try {
+      const dir = path.dirname(dismissPath);
+      await fsp.mkdir(dir, { recursive: true });
+      await fsp.writeFile(dismissPath, JSON.stringify({
+        version: 1,
+        lastUpdated: new Date().toISOString(),
+        dismissed,
+      }, null, 2));
+    } catch (err) {
+      console.error('Failed to save synced dismissals:', err.message);
+    }
+  }
+
+  _getMergedDismissals() {
+    return new Set(this.config.data.gameSaveBlockedGames || []);
   }
 
   async _saveLibrary() {
@@ -455,6 +509,8 @@ class GameSaveManager extends EventEmitter {
 
     this._library.delete(gameId);
     await this._saveLibrary();
+    // Save to synced file so other peers pick it up
+    await this._saveSyncedDismissals();
   }
 
   /**
