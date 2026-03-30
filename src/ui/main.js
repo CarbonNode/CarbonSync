@@ -262,6 +262,39 @@ function setupIPC() {
     return result;
   });
 
+  ipcMain.handle('remove-peer', async (_, rawIp, port) => {
+    let ip = rawIp?.trim();
+    if (!ip) return;
+    if (ip.includes(':')) {
+      const parts = ip.split(':');
+      ip = parts[0];
+      port = parseInt(parts[1]) || port;
+    }
+    port = port || 21547;
+    const key = `${ip}:${port}`;
+
+    // Disconnect
+    if (server.peerConnections?.has(key)) {
+      server.peerConnections.get(key).client?.disconnect();
+      server.peerConnections.delete(key);
+    }
+
+    // Remove from saved peers
+    if (server.config.data.savedPeers) {
+      server.config.data.savedPeers = server.config.data.savedPeers.filter(p => !(p.ip === ip && p.port === port));
+      server.config.save();
+    }
+
+    // Remove from discovered
+    if (server.discovery) {
+      server.discovery.services.delete(ip);
+    }
+
+    sendToUI('activity', { type: 'disconnect', message: `Removed peer ${ip}:${port}`, time: Date.now() });
+    sendToUI('status-update', server?.getStatus());
+    return { success: true };
+  });
+
   // ---- Game Save IPC ----
 
   ipcMain.handle('get-game-library', () => server?.gameSaveManager?.getLibrary() || []);

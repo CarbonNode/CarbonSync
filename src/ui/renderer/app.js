@@ -258,7 +258,10 @@ function renderDevices(devices) {
         </div>
         <div class="device-detail">${d.ip}:${d.port}</div>
       </div>
-      <span class="device-role ${d.role}">${d.role}</span>
+      <div style="display:flex;align-items:center;gap:6px;">
+        <span class="device-role ${d.role}">${d.role}</span>
+        <button class="btn sm red" onclick="removePeer('${escA(d.ip)}', ${d.port})">Remove</button>
+      </div>
     </div>
   `).join('');
 }
@@ -298,6 +301,12 @@ function renamePeer(hostname, currentName) {
       break;
     }
   }
+}
+
+async function removePeer(ip, port) {
+  await api.removePeer(ip, port);
+  toast(`Removed peer ${ip}:${port}`, 'info');
+  refresh();
 }
 
 function setupDevices() {

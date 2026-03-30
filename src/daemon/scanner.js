@@ -84,7 +84,7 @@ class Scanner {
 
     const scanId = Date.now();
     const stats = { added: 0, modified: 0, deleted: 0, unchanged: 0, errors: 0, total: 0 };
-    const BATCH_SIZE = 500;
+    const BATCH_SIZE = 100; // Smaller batches = shorter UI blocks
 
     try {
       try {
@@ -150,10 +150,12 @@ class Scanner {
           if (stats.errors <= 10) console.warn(`Scan error [${relPath}]: ${err.message}`);
         }
 
-        // Flush batch to DB periodically (crash recovery)
+        // Flush batch to DB periodically (crash recovery + yield for UI)
         if (batch.length >= BATCH_SIZE) {
           batchWrite(batch);
           batch = [];
+          // Yield after DB write so UI doesn't freeze
+          await new Promise(r => setImmediate(r));
         }
       }
 

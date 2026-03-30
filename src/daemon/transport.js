@@ -244,7 +244,11 @@ class SyncServer extends EventEmitter {
   }
 
   _handleHello(client, msg) {
-    if (msg.apiKey !== this.apiKey) {
+    // Accept if: API key matches, OR connecting from private LAN IP
+    const remoteIp = client.socket.remoteAddress?.replace('::ffff:', '') || '';
+    const isLan = remoteIp.startsWith('192.168.') || remoteIp.startsWith('10.') || remoteIp === '127.0.0.1';
+
+    if (!isLan && msg.apiKey !== this.apiKey) {
       writeFrame(client.socket, { type: MSG.ERROR, message: 'Unauthorized' });
       client.socket.destroy();
       return;

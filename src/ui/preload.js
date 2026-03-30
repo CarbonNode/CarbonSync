@@ -13,6 +13,7 @@ contextBridge.exposeInMainWorld('carbonsync', {
   setFolderExcludes: (folder, excludes) => ipcRenderer.invoke('set-folder-excludes', folder, excludes),
   getFolderExcludes: (folder) => ipcRenderer.invoke('get-folder-excludes', folder),
   addPeer: (ip, port) => ipcRenderer.invoke('add-peer', ip, port),
+  removePeer: (ip, port) => ipcRenderer.invoke('remove-peer', ip, port),
   setHubConnection: (addr, key) => ipcRenderer.invoke('set-hub-connection', addr, key),
   setFolderDirection: (folder, dir) => ipcRenderer.invoke('set-folder-direction', folder, dir),
   checkUpdate: () => ipcRenderer.invoke('check-update'),
