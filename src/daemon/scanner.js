@@ -65,18 +65,28 @@ class Scanner {
   }
 
   /**
-   * Full scan. Hashes OUTSIDE transaction, writes in batched transactions.
+   * Cancel a running scan.
    */
-  async fullScan() {
+  cancelScan() {
+    this._cancelRequested = true;
+  }
+
+  /**
+   * Full scan. Fast mode: uses mtime:size fingerprint for new files (no hashing).
+   * Only hashes files when content comparison is actually needed (during sync).
+   * Writes to DB in batches of 500 for crash recovery.
+   */
+  async fullScan(opts = {}) {
     if (this._scanning) return { skipped: true };
     this._scanning = true;
+    this._cancelRequested = false;
     this._stale = false;
 
     const scanId = Date.now();
     const stats = { added: 0, modified: 0, deleted: 0, unchanged: 0, errors: 0, total: 0 };
+    const BATCH_SIZE = 500;
 
     try {
-      // Verify folder is accessible
       try {
         await fsp.access(this.folderPath);
       } catch {
@@ -88,13 +98,30 @@ class Scanner {
       const files = await this._walkDir(this.folderPath);
       stats.total = files.length;
 
-      // Phase 1: Hash files that changed (OUTSIDE transaction)
-      const updates = [];
+      const batchWrite = this.db.transaction((items) => {
+        for (const item of items) {
+          this._stmtUpsert.run(item.relPath, item.size, item.mtime, item.hash, item.scanId);
+        }
+      });
+
+      let batch = [];
+
       for (let i = 0; i < files.length; i++) {
+        // Check for cancellation
+        if (this._cancelRequested) {
+          // Write what we have so far
+          if (batch.length > 0) batchWrite(batch);
+          console.log(`Scan cancelled at ${i}/${files.length}`);
+          this._stale = true;
+          return { ...stats, cancelled: true };
+        }
+
         const file = files[i];
         const relPath = path.relative(this.folderPath, file.path).replace(/\\/g, '/');
 
-        this.onProgress({ phase: 'scanning', current: i + 1, total: files.length, file: relPath });
+        if (i % 100 === 0 || i === files.length - 1) {
+          this.onProgress({ phase: 'scanning', current: i + 1, total: files.length, file: relPath });
+        }
 
         try {
           const existing = this._stmtGet.get(relPath);
@@ -103,30 +130,33 @@ class Scanner {
           if (existing &&
               existing.mtime_ms === Math.floor(file.mtime) &&
               existing.size === file.size) {
-            updates.push({ relPath, size: existing.size, mtime: existing.mtime_ms, hash: existing.hash, scanId, isNew: false });
+            batch.push({ relPath, size: existing.size, mtime: existing.mtime_ms, hash: existing.hash, scanId });
             stats.unchanged++;
-            continue;
+          } else if (existing) {
+            // File modified — hash it for accurate comparison
+            const hash = await this._hashFile(file.path);
+            batch.push({ relPath, size: file.size, mtime: Math.floor(file.mtime), hash, scanId });
+            stats.modified++;
+          } else {
+            // New file — use fast fingerprint (mtime:size), defer full hash to sync time
+            const fastHash = `fast:${file.size}:${Math.floor(file.mtime)}`;
+            batch.push({ relPath, size: file.size, mtime: Math.floor(file.mtime), hash: fastHash, scanId });
+            stats.added++;
           }
-
-          // Hash file (NOT inside transaction — non-blocking for DB)
-          const hash = await this._hashFile(file.path);
-          updates.push({ relPath, size: file.size, mtime: Math.floor(file.mtime), hash, scanId, isNew: !existing });
-
-          if (existing) stats.modified++;
-          else stats.added++;
         } catch (err) {
           stats.errors++;
-          console.warn(`Scan error [${relPath}]: ${err.message}`);
+          if (stats.errors <= 10) console.warn(`Scan error [${relPath}]: ${err.message}`);
+        }
+
+        // Flush batch to DB periodically (crash recovery)
+        if (batch.length >= BATCH_SIZE) {
+          batchWrite(batch);
+          batch = [];
         }
       }
 
-      // Phase 2: Write all updates in a single fast transaction
-      const batchWrite = this.db.transaction((items) => {
-        for (const item of items) {
-          this._stmtUpsert.run(item.relPath, item.size, item.mtime, item.hash, item.scanId);
-        }
-      });
-      batchWrite(updates);
+      // Flush remaining
+      if (batch.length > 0) batchWrite(batch);
 
       // Phase 3: Persist directories (for empty dir sync)
       if (this._dirs) {
@@ -190,6 +220,55 @@ class Scanner {
   }
 
   getFile(relPath) { return this._stmtGet.get(relPath); }
+
+  /**
+   * Ensure a file has a real SHA-256 hash (not a fast fingerprint).
+   * Called on-demand during sync when actual content comparison is needed.
+   */
+  async ensureRealHash(relPath) {
+    const entry = this._stmtGet.get(relPath);
+    if (!entry) return null;
+    if (!entry.hash.startsWith('fast:')) return entry; // Already has real hash
+
+    const absPath = path.join(this.folderPath, relPath);
+    try {
+      const hash = await this._hashFile(absPath);
+      this._stmtUpsert.run(relPath, entry.size, entry.mtime_ms, hash, entry.scanned_at);
+      return { ...entry, hash };
+    } catch (err) {
+      console.warn(`Hash upgrade failed [${relPath}]: ${err.message}`);
+      return entry;
+    }
+  }
+
+  /**
+   * Batch upgrade fast hashes to real hashes.
+   */
+  async upgradeFastHashes(onProgress) {
+    const fastFiles = this.db.prepare("SELECT * FROM files WHERE hash LIKE 'fast:%'").all();
+    if (fastFiles.length === 0) return 0;
+
+    console.log(`Upgrading ${fastFiles.length} fast hashes to SHA-256...`);
+    let upgraded = 0;
+
+    for (let i = 0; i < fastFiles.length; i++) {
+      if (this._cancelRequested) break;
+      const f = fastFiles[i];
+      const absPath = path.join(this.folderPath, f.path);
+      try {
+        const hash = await this._hashFile(absPath);
+        this._stmtUpsert.run(f.path, f.size, f.mtime_ms, hash, f.scanned_at);
+        upgraded++;
+      } catch { /* skip */ }
+
+      if (onProgress && i % 50 === 0) {
+        onProgress({ phase: 'hashing', current: i + 1, total: fastFiles.length, file: f.path });
+      }
+    }
+
+    console.log(`Upgraded ${upgraded}/${fastFiles.length} hashes`);
+    return upgraded;
+  }
 
   isStale() { return this._stale; }
 

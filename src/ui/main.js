@@ -161,9 +161,15 @@ function setupIPC() {
   });
 
   ipcMain.handle('rescan', async (_, folderName) => {
-    if (server?.engine) {
-      return server.engine.rescan(folderName);
+    if (server?.engine) return server.engine.rescan(folderName);
+  });
+
+  ipcMain.handle('cancel-scan', (_, folderName) => {
+    if (server?.engine?.folders.has(folderName)) {
+      server.engine.folders.get(folderName).scanner.cancelScan();
+      return true;
     }
+    return false;
   });
 
   ipcMain.handle('window-minimize', () => mainWindow?.minimize());

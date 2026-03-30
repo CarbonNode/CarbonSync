@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld('carbonsync', {
   updateSettings: (s) => ipcRenderer.invoke('update-settings', s),
   pickFolder: () => ipcRenderer.invoke('pick-folder'),
   rescan: (name) => ipcRenderer.invoke('rescan', name),
+  cancelScan: (name) => ipcRenderer.invoke('cancel-scan', name),
   renamePeer: (hostname, name) => ipcRenderer.invoke('rename-peer', hostname, name),
   setFolderExcludes: (folder, excludes) => ipcRenderer.invoke('set-folder-excludes', folder, excludes),
   getFolderExcludes: (folder) => ipcRenderer.invoke('get-folder-excludes', folder),
