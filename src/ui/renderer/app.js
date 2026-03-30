@@ -16,7 +16,7 @@ async function init() {
   setupGames();
   setupLiveEvents();
   await refresh();
-  setInterval(refresh, 8000);
+  setInterval(refresh, 30000); // Refresh every 30s (events push updates for real-time)
 }
 
 // ---- Titlebar ----
