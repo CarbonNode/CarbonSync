@@ -49,6 +49,7 @@ async function refresh() {
     ? '<span class="tls-badge on">TLS</span>' : '<span class="tls-badge off">TCP</span>';
 
   renderFolders(s.folders || []);
+  renderRemoteFolders(s.remoteFolders || []);
   // Merge all device sources: discovered (mDNS), connected peers, saved peers
   const allDevices = mergeDeviceLists(s);
   renderDevices(allDevices, s);
@@ -117,6 +118,54 @@ function renderFolders(folders) {
       </div>
     </div>`;
   }).join('');
+}
+
+// ---- Remote Folders (from connected peers) ----
+function renderRemoteFolders(remoteFolders) {
+  let container = document.getElementById('remote-folders-list');
+  if (!container) {
+    // Create container after folders-list if it doesn't exist
+    const foldersEl = document.getElementById('folders-list');
+    if (!foldersEl) return;
+    container = document.createElement('div');
+    container.id = 'remote-folders-list';
+    foldersEl.after(container);
+  }
+
+  if (remoteFolders.length === 0) {
+    container.innerHTML = '';
+    return;
+  }
+
+  container.innerHTML = `<div class="devices-section-label" style="margin-top:12px;">Available from peers</div>` +
+    remoteFolders.map(f => `
+      <div class="folder-card discovered">
+        <div class="folder-header">
+          <div class="folder-info">
+            <div class="folder-name">${esc(f.name)}</div>
+            <div class="folder-meta">
+              <span><strong>${(f.fileCount || 0).toLocaleString()}</strong> files</span>
+              <span>from <strong>${esc(f.deviceName)}</strong></span>
+            </div>
+          </div>
+          <div class="folder-btns">
+            <button class="btn sm green" onclick="addRemoteFolder('${escA(f.name)}')">Add</button>
+          </div>
+        </div>
+      </div>
+    `).join('');
+}
+
+async function addRemoteFolder(name) {
+  const localPath = await api.pickFolder();
+  if (!localPath) return;
+  try {
+    await api.addFolder(localPath, name, 'receive');
+    toast(`Added ${name} — syncing to ${localPath}`, 'success');
+    refresh();
+  } catch (err) {
+    toast(`Failed: ${err.message}`, 'error');
+  }
 }
 
 // ---- Folder Settings Popup ----
