@@ -167,12 +167,7 @@ function toggleGroup(name) {
 }
 
 function setGroupPrompt(folderPath) {
-  // Find card by matching data-path attribute (handles backslashes in Windows paths)
-  const cards = document.querySelectorAll('.folder-card');
-  let card = null;
-  for (const c of cards) {
-    if (c.dataset.path === folderPath) { card = c; break; }
-  }
+  const card = findCardByPath(folderPath);
   const el = card?.querySelector('.folder-name span');
   if (!el) return;
 
@@ -331,12 +326,7 @@ function setupFolderActions() {
 }
 
 function renameFolder(folderPath, currentName) {
-  // Find the specific card by path, not name (handles duplicate names + Windows backslashes)
-  const cards = document.querySelectorAll('.folder-card');
-  let card = null;
-  for (const c of cards) {
-    if (c.dataset.path === folderPath) { card = c; break; }
-  }
+  const card = findCardByPath(folderPath);
   const nameEl = card?.querySelector('.folder-name span');
   if (nameEl) {
     const input = document.createElement('input');
@@ -1353,6 +1343,15 @@ document.addEventListener('DOMContentLoaded', () => {
 // ---- Helpers ----
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 function escA(s) { return String(s).replace(/'/g, "\\'").replace(/\\/g, '\\\\'); }
+function findCardByPath(folderPath) {
+  // Normalize: dataset.path has doubled backslashes from escA, onclick receives single
+  const norm = (s) => s.replace(/\\\\/g, '\\');
+  const target = norm(folderPath);
+  for (const c of document.querySelectorAll('.folder-card')) {
+    if (norm(c.dataset.path || '') === target) return c;
+  }
+  return null;
+}
 function fmt(b) {
   if (!b) return '0 B';
   const k = 1024; const s = ['B', 'KB', 'MB', 'GB', 'TB'];
