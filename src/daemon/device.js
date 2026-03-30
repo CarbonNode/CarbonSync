@@ -39,6 +39,7 @@ class CarbonSyncDevice extends EventEmitter {
     this.engine = null;
     this.transport = null;        // TCP server (always on)
     this.hubConnection = null;    // SyncClient to hub (if not the hub)
+    this.peerConnections = new Map(); // ip:port -> { client: SyncClient, deviceName, connected }
     this.discovery = null;
     this.fingerprint = '';
     this._scanInterval = null;
@@ -84,6 +85,15 @@ class CarbonSyncDevice extends EventEmitter {
       // Push to hub if direction is push or both
       if ((direction === 'push' || direction === 'both') && this.hubConnection?.authenticated) {
         this._queuePush(folder, filtered);
+      }
+
+      // Push to all connected peers too
+      if (direction === 'push' || direction === 'both') {
+        for (const [, peerInfo] of this.peerConnections) {
+          if (peerInfo.connected && peerInfo.client?.authenticated) {
+            this._queuePushToPeer(peerInfo, folder, filtered);
+          }
+        }
       }
 
       // Broadcast to connected devices (hub behavior — for receivers)
@@ -160,6 +170,20 @@ class CarbonSyncDevice extends EventEmitter {
       });
       try {
         await this.gameSaveManager.start();
+
+        // Auto-register game-saves folder for sync (direction: both)
+        const gameSavesDir = path.join(this.configDir, 'game-saves');
+        const alreadySynced = this.config.folders.some(f => path.resolve(f.path) === path.resolve(gameSavesDir));
+        if (!alreadySynced && fs.existsSync(gameSavesDir)) {
+          try {
+            await this.addFolder(gameSavesDir, 'Game Saves', 'both');
+            console.log('Auto-registered game-saves folder for sync');
+          } catch (err) {
+            if (!err.message.includes('already synced')) {
+              console.error('Failed to auto-register game-saves:', err.message);
+            }
+          }
+        }
       } catch (err) {
         console.error('Game save manager failed:', err.message);
       }
@@ -242,6 +266,207 @@ class CarbonSyncDevice extends EventEmitter {
         console.error(`Sync failed for ${folder.name}: ${err.message}`);
       }
     }
+  }
+
+  // ---- Peer Connections ----
+
+  /**
+   * Connect to a peer and start syncing folders.
+   * Called when user adds a peer via UI.
+   */
+  async connectToPeer(ip, port, apiKey) {
+    const key = `${ip}:${port}`;
+    if (this.peerConnections.has(key)) {
+      const existing = this.peerConnections.get(key);
+      if (existing.client?.connected) return { success: true, message: 'Already connected' };
+      // Disconnect old one
+      existing.client?.disconnect();
+    }
+
+    const client = new SyncClient({
+      host: ip,
+      port,
+      apiKey: apiKey || this.config.apiKey,
+      deviceId: this.config.deviceId,
+      deviceName: this.config.deviceName,
+    });
+
+    const peerInfo = { client, ip, port, deviceName: null, connected: false };
+    this.peerConnections.set(key, peerInfo);
+
+    return new Promise((resolve) => {
+      const timeout = setTimeout(() => {
+        resolve({ success: false, message: 'Connection timed out' });
+      }, 10000);
+
+      client.on('authenticated', async (msg) => {
+        clearTimeout(timeout);
+        peerInfo.deviceName = msg.serverName || ip;
+        peerInfo.connected = true;
+        console.log(`Connected to peer: ${peerInfo.deviceName} (${key})`);
+        this.emit('peer-connected', { ip, port, deviceName: peerInfo.deviceName });
+
+        // Start syncing all folders with this peer
+        this._syncWithPeer(peerInfo);
+        resolve({ success: true, deviceName: peerInfo.deviceName });
+      });
+
+      client.on('message', (msg) => {
+        if (msg.type === MSG.NOTIFY) {
+          // Peer has changes — re-sync that folder
+          const folderConfig = this.config.folders.find(f => f.name === msg.folder);
+          if (folderConfig && (folderConfig.direction === 'receive' || folderConfig.direction === 'both')) {
+            this._pullFolderFromPeer(peerInfo, folderConfig);
+          }
+        } else if (msg.type === MSG.FOLDER_LIST) {
+          this.emit('peer-folders', { peer: key, folders: msg.folders });
+        }
+      });
+
+      client.on('disconnected', () => {
+        peerInfo.connected = false;
+        console.log(`Peer disconnected: ${peerInfo.deviceName || key}`);
+        this.emit('peer-disconnected', { ip, port, deviceName: peerInfo.deviceName });
+      });
+
+      client.on('error', (err) => {
+        clearTimeout(timeout);
+        console.error(`Peer ${key} error: ${err.message}`);
+        if (!peerInfo.connected) resolve({ success: false, message: err.message });
+      });
+
+      client.connect();
+    });
+  }
+
+  /**
+   * Sync all folders with a connected peer based on direction.
+   */
+  async _syncWithPeer(peerInfo) {
+    if (!peerInfo.connected) return;
+
+    for (const folder of this.config.folders) {
+      if (!folder.enabled) continue;
+      try {
+        switch (folder.direction) {
+          case 'receive':
+          case 'both':
+            await this._pullFolderFromPeer(peerInfo, folder);
+            peerInfo.client.send({ type: MSG.SUBSCRIBE, folder: folder.name });
+            break;
+        }
+        // Push is handled by the watcher — when files change locally,
+        // they get pushed to ALL connected peers
+      } catch (err) {
+        console.error(`Peer sync failed [${folder.name}]: ${err.message}`);
+      }
+    }
+  }
+
+  /**
+   * Pull a folder from a specific peer.
+   */
+  async _pullFolderFromPeer(peerInfo, folder) {
+    if (!peerInfo.client?.authenticated) return;
+    if (!this.engine?.folders.has(folder.name)) return;
+
+    const scanner = this.engine.folders.get(folder.name).scanner;
+    const localIndex = scanner.getIndex();
+
+    let response;
+    try {
+      response = await peerInfo.client.request({
+        type: MSG.INDEX_REQUEST,
+        folder: folder.name,
+        clientIndex: localIndex.map(f => ({ path: f.path, hash: f.hash, size: f.size })),
+      }, 60000);
+    } catch (err) {
+      console.error(`Pull from peer failed [${folder.name}]: ${err.message}`);
+      return;
+    }
+
+    if (response.type === MSG.ERROR || !response.diff) return;
+
+    const { toDownload = [], toDelete = [], toCopy = [] } = response.diff;
+    if (toDownload.length === 0 && toDelete.length === 0 && toCopy.length === 0) return;
+
+    console.log(`Pull from ${peerInfo.deviceName}: ${folder.name} — ${toDownload.length} download, ${toDelete.length} delete`);
+
+    // Deletions
+    for (const relPath of toDelete) {
+      const absPath = path.join(folder.path, relPath);
+      try {
+        this._markRecentlyWritten(folder.name, relPath);
+        await fsp.unlink(absPath);
+        scanner.removeFile(absPath);
+      } catch (err) {
+        if (err.code !== 'ENOENT') console.warn(`Delete failed: ${err.message}`);
+      }
+    }
+
+    // Downloads
+    for (const file of toDownload) {
+      try {
+        await this._downloadFileFromPeer(peerInfo, folder, file, scanner);
+      } catch (err) {
+        console.error(`Download from peer failed [${file.path}]: ${err.message}`);
+      }
+    }
+  }
+
+  async _downloadFileFromPeer(peerInfo, folder, fileInfo, scanner) {
+    const absPath = path.join(folder.path, fileInfo.path);
+    const tmpPath = absPath + '.carbonsync.tmp';
+    await fsp.mkdir(path.dirname(absPath), { recursive: true });
+
+    try {
+      const response = await peerInfo.client.request({
+        type: MSG.BLOCK_REQUEST,
+        folder: folder.name,
+        path: fileInfo.path,
+      }, 300000);
+
+      if (response.type === MSG.ERROR) throw new Error(response.message);
+
+      let fileData;
+      if (response.streaming || response.binaryPromise) {
+        const chunks = await response.binaryPromise;
+        fileData = Buffer.concat(chunks);
+      } else {
+        fileData = await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => reject(new Error('Binary timeout')), 120000);
+          peerInfo.client.once('binary', (data) => { clearTimeout(timeout); resolve(data); });
+        });
+      }
+
+      const hash = crypto.createHash('sha256').update(fileData).digest('hex');
+      if (fileInfo.hash && !fileInfo.hash.startsWith('fast:') && hash !== fileInfo.hash) {
+        throw new Error('Hash mismatch');
+      }
+
+      this._markRecentlyWritten(folder.name, fileInfo.path);
+      await fsp.writeFile(tmpPath, fileData);
+      if (fileInfo.mtime_ms) {
+        const mtime = new Date(fileInfo.mtime_ms);
+        await fsp.utimes(tmpPath, mtime, mtime);
+      }
+      await fsp.rename(tmpPath, absPath);
+      await scanner.updateFile(absPath);
+    } catch (err) {
+      try { await fsp.unlink(tmpPath); } catch {}
+      throw err;
+    }
+  }
+
+  /**
+   * Get all connected peers.
+   */
+  getConnectedPeers() {
+    const peers = [];
+    for (const [key, info] of this.peerConnections) {
+      peers.push({ address: key, deviceName: info.deviceName, connected: info.connected });
+    }
+    return peers;
   }
 
   // ---- Pull (device ← hub) ----
@@ -497,6 +722,65 @@ class CarbonSyncDevice extends EventEmitter {
     }
 
     console.log(`${folder.name}: push complete`);
+  }
+
+  /**
+   * Push changes to a specific peer (debounced).
+   */
+  _queuePushToPeer(peerInfo, folderName, changes) {
+    const key = `peer:${peerInfo.ip}:${peerInfo.port}:${folderName}`;
+    if (!this._pushQueues.has(key)) this._pushQueues.set(key, new Set());
+    const queue = this._pushQueues.get(key);
+
+    for (const change of changes) {
+      queue.add(JSON.stringify({ type: change.type, path: change.path }));
+    }
+
+    if (this._pushTimers.has(key)) clearTimeout(this._pushTimers.get(key));
+    this._pushTimers.set(key, setTimeout(async () => {
+      if (!peerInfo.connected) return;
+      const items = [...queue].map(s => JSON.parse(s));
+      queue.clear();
+
+      const folder = this.config.folders.find(f => f.name === folderName);
+      if (!folder) return;
+
+      console.log(`Pushing ${items.length} changes to peer ${peerInfo.deviceName} for ${folderName}`);
+      for (const change of items) {
+        try {
+          if (change.type === 'delete') {
+            await peerInfo.client.request({
+              type: MSG.FILE_DELETE_PUSH, folder: folderName, path: change.path,
+            }, 10000);
+          } else {
+            const absPath = path.join(folder.path, change.path);
+            let stat;
+            try { stat = await fsp.stat(absPath); } catch { continue; }
+            if (!stat.isFile()) continue;
+
+            const data = await fsp.readFile(absPath);
+            const hash = crypto.createHash('sha256').update(data).digest('hex');
+
+            const resp = await peerInfo.client.request({
+              type: MSG.FILE_PUSH, folder: folderName, path: change.path,
+              size: data.length, hash, mtime_ms: Math.floor(stat.mtimeMs),
+            }, 30000);
+
+            if (resp.status === 'skip') continue;
+
+            const header = Buffer.alloc(5);
+            header.writeUInt32BE(data.length + 1);
+            header[4] = 0xFF;
+            peerInfo.client.socket.write(Buffer.concat([header, data]));
+            writeFrame(peerInfo.client.socket, {
+              type: 'transfer_end', folder: folderName, path: change.path, bytesSent: data.length,
+            });
+          }
+        } catch (err) {
+          console.error(`Push to peer failed [${change.path}]: ${err.message}`);
+        }
+      }
+    }, PUSH_DEBOUNCE_MS));
   }
 
   // ---- Handle messages from connected devices ----

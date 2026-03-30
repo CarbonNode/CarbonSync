@@ -241,25 +241,25 @@ function setupIPC() {
       port = parseInt(parts[1]) || port;
     }
     port = port || 21547;
-    // Test connection first
-    const net = require('net');
-    const ok = await new Promise((resolve) => {
-      const s = new net.Socket();
-      s.setTimeout(3000);
-      s.connect(port, ip, () => { s.destroy(); resolve(true); });
-      s.on('error', () => resolve(false));
-      s.on('timeout', () => { s.destroy(); resolve(false); });
-    });
-    if (!ok) return { error: `Cannot connect to ${ip}:${port}` };
-
-    // Add to discovered devices manually
-    const peer = { role: 'peer', ip, port, hostname: ip, deviceId: '', name: `Manual: ${ip}` };
-    if (server?.discovery) {
-      server.discovery.services.set(ip, peer);
+    // Connect to peer and start syncing
+    const result = await server.connectToPeer(ip, port);
+    if (result.success) {
+      // Also add to discovered devices list for UI
+      const peer = { role: 'peer', ip, port, hostname: result.deviceName || ip, deviceId: '', name: result.deviceName || ip };
+      if (server?.discovery) {
+        server.discovery.services.set(ip, peer);
+      }
+      // Save peer address for auto-reconnect on restart
+      if (!server.config.data.savedPeers) server.config.data.savedPeers = [];
+      const existing = server.config.data.savedPeers.find(p => p.ip === ip && p.port === port);
+      if (!existing) {
+        server.config.data.savedPeers.push({ ip, port });
+        server.config.save();
+      }
+      sendToUI('activity', { type: 'connect', message: `Connected to ${result.deviceName || ip}:${port} — syncing folders`, time: Date.now() });
     }
     sendToUI('status-update', server?.getStatus());
-    sendToUI('activity', { type: 'connect', message: `Added peer ${ip}:${port}`, time: Date.now() });
-    return { success: true };
+    return result;
   });
 
   // ---- Game Save IPC ----
