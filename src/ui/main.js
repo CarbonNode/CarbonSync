@@ -348,6 +348,15 @@ function setupIPC() {
     if (folderPath) require('electron').shell.openPath(folderPath);
   });
 
+  ipcMain.handle('open-backup-folder', async (_, gameId, backupDir) => {
+    if (!server?.gameSaveManager) return;
+    const entry = server.gameSaveManager._library?.get(gameId);
+    if (!entry) return;
+    const displayName = server.gameSaveManager._getDisplayName(entry);
+    const fullPath = require('path').join(server.gameSaveManager.backup.gameDir(displayName), 'backups', backupDir);
+    require('electron').shell.openPath(fullPath);
+  });
+
   ipcMain.handle('add-custom-game', async (_, cfg) => {
     return server?.gameSaveManager?.addCustomGame(cfg);
   });

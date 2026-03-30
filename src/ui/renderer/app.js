@@ -606,6 +606,7 @@ async function loadGameHistory(gameId) {
           ${isPreRestore ? '<span class="save-safety-tag">PRE-RESTORE</span>' : ''}
           <span class="save-detail">${h.fileCount} file${h.fileCount !== 1 ? 's' : ''}, ${fmt(h.totalSize)}</span>
           <span class="save-device">${esc(h.sourceDevice)}</span>
+          <span class="open-folder-btn" onclick="openBackupFolder('${escA(gameId)}', '${escA(h.dir)}')" title="Open backup folder">&#128194;</span>
           <button class="btn sm" onclick="restoreSave('${escA(gameId)}', '${escA(h.dir)}')">Restore</button>
         </div>
         ${filesExpanded ? `<div class="save-files" id="files-${backupKey.replace(/[^a-z0-9-]/gi, '_')}"><span class="save-files-loading">Loading files...</span></div>` : ''}
@@ -909,6 +910,10 @@ function setupGames() {
 
 function openFolder(folderPath) {
   api.openFolder(folderPath);
+}
+
+function openBackupFolder(gameId, backupDir) {
+  api.openBackupFolder(gameId, backupDir);
 }
 
 function fmtTimeAgo(isoString) {

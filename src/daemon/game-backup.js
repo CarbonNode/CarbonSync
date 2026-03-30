@@ -61,6 +61,9 @@ class GameBackup {
     await fsp.mkdir(currentDir, { recursive: true });
     await fsp.mkdir(backupsDir, { recursive: true });
 
+    // Bail if saveBase doesn't exist (game not installed on this PC)
+    if (!fs.existsSync(saveBase)) return null;
+
     // Always update current/ (keeps sync up to date)
     let fileCount = 0;
     let totalSize = 0;
@@ -343,12 +346,16 @@ class GameBackup {
           dir: entry.name,
         });
       } catch {
-        // Backup without metadata — use directory name as timestamp
+        // Backup without metadata — count files directly
+        const backupPath = path.join(backupsDir, entry.name);
+        const sizes = await this._getFileSizes(backupPath);
+        let totalSize = 0;
+        for (const s of sizes.values()) totalSize += s;
         history.push({
           timestamp: entry.name,
-          fileCount: 0,
-          totalSize: 0,
-          sourceDevice: 'unknown',
+          fileCount: sizes.size,
+          totalSize,
+          sourceDevice: os.hostname(),
           dir: entry.name,
         });
       }
