@@ -257,10 +257,14 @@ function renderActivity() {
 
 // ---- Devices ----
 function renderDevices(devices) {
-  // Filter out self
-  const myName = currentStatus.deviceName || '';
+  // Filter out self (by deviceId or hostname matching this device's name)
   const myId = currentStatus.deviceId || '';
-  devices = devices.filter(d => d.hostname !== myName && d.deviceId !== myId && d.hostname !== require('os')?.hostname?.());
+  const myName = currentStatus.deviceName || '';
+  devices = devices.filter(d => {
+    if (d.deviceId && d.deviceId === myId) return false;
+    if (d.hostname === myName) return false;
+    return true;
+  });
 
   const el = document.getElementById('devices-list');
   if (devices.length === 0) {

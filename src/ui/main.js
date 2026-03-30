@@ -248,6 +248,15 @@ function setupIPC() {
       port = parseInt(parts[1]) || port;
     }
     port = port || 21547;
+
+    // Prevent connecting to self
+    if (ip === '127.0.0.1' || ip === 'localhost') return { error: 'Cannot connect to self' };
+    const localIPs = [];
+    for (const ifaces of Object.values(require('os').networkInterfaces())) {
+      for (const iface of ifaces) { if (iface.family === 'IPv4') localIPs.push(iface.address); }
+    }
+    if (localIPs.includes(ip)) return { error: 'Cannot connect to self' };
+
     // Connect to peer and start syncing
     const result = await server.connectToPeer(ip, port);
     if (result.success) {
