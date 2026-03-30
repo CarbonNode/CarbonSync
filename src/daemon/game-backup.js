@@ -405,7 +405,7 @@ class GameBackup {
   /**
    * Restore from current/ instead of a specific backup.
    */
-  async restoreCurrent(gameName) {
+  async restoreCurrent(gameName, targetPath) {
     const dir = this.gameDir(gameName);
     const metaPath = path.join(dir, '_game.json');
 
@@ -416,7 +416,8 @@ class GameBackup {
       throw new Error(`Game metadata not found for ${gameName}`);
     }
 
-    const saveBase = gameMeta.saveBase;
+    // Use targetPath override (for cross-PC restore) or fall back to stored path
+    const saveBase = targetPath || gameMeta.saveBase;
     if (!saveBase) throw new Error(`No save location recorded for ${gameName}`);
 
     const currentDir = path.join(dir, 'current');

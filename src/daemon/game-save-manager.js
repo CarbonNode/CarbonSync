@@ -176,15 +176,54 @@ class GameSaveManager extends EventEmitter {
     }
   }
 
+  /**
+   * Compute the relative path within a root for cross-PC resolution.
+   * e.g., C:\Users\rober\AppData\LocalLow\Taboo Tales\Empire of Lust
+   *       root = appdata_locallow → relPath = Taboo Tales/Empire of Lust
+   */
+  _computeRelPath(saveBase, rootKey) {
+    if (!saveBase || !rootKey) return null;
+    const roots = this.gameDB.resolveRoots();
+    const rootDir = roots[rootKey];
+    if (!rootDir) return null;
+    const normalized = path.resolve(saveBase);
+    const normalizedRoot = path.resolve(rootDir);
+    if (normalized.startsWith(normalizedRoot + path.sep)) {
+      return normalized.slice(normalizedRoot.length + 1);
+    }
+    return null;
+  }
+
+  /**
+   * Resolve saveBase for the LOCAL machine from rootKey + relPath.
+   * This is what makes cross-PC restore work — different users, same relative path.
+   */
+  _resolveLocalSaveBase(entry) {
+    // If the stored saveBase exists locally, use it
+    if (entry.saveBase && fs.existsSync(entry.saveBase)) return entry.saveBase;
+    // Otherwise resolve from rootKey + relPath
+    if (entry.rootKey && entry.relPath) {
+      const roots = this.gameDB.resolveRoots();
+      const rootDir = roots[entry.rootKey];
+      if (rootDir) return path.join(rootDir, entry.relPath);
+    }
+    return entry.saveBase; // fallback
+  }
+
   _ensureLibraryEntry(game, saveBase, rootKey, isHeuristic) {
     if (this._library.has(game.id)) {
       const entry = this._library.get(game.id);
-      // Update saveBase if changed
-      if (saveBase) entry.saveBase = saveBase;
+      // Update saveBase if this is a local detection (path exists on this PC)
+      if (saveBase && fs.existsSync(saveBase)) {
+        entry.saveBase = saveBase;
+        entry.relPath = this._computeRelPath(saveBase, rootKey || entry.rootKey) || entry.relPath;
+        if (rootKey) entry.rootKey = rootKey;
+      }
       return entry;
     }
 
     const overrides = this.config.data.gameSaveGameOverrides?.[game.id];
+    const relPath = this._computeRelPath(saveBase, rootKey);
 
     const entry = {
       id: game.id,
@@ -192,6 +231,7 @@ class GameSaveManager extends EventEmitter {
       displayName: overrides?.displayName || game.name,
       saveBase,
       rootKey,
+      relPath,
       enabled: overrides?.enabled !== undefined ? overrides.enabled : true,
       isHeuristic: isHeuristic || false,
       running: false,
@@ -273,6 +313,7 @@ class GameSaveManager extends EventEmitter {
       displayName: g.displayName,
       saveBase: g.saveBase,
       rootKey: g.rootKey,
+      relPath: g.relPath,
       enabled: g.enabled,
       isHeuristic: g.isHeuristic,
       lastBackup: g.lastBackup,
@@ -312,6 +353,7 @@ class GameSaveManager extends EventEmitter {
     return Array.from(this._library.values()).map(g => ({
       ...g,
       displayName: this._getDisplayName(g),
+      saveBase: this._resolveLocalSaveBase(g), // Always show resolved local path
     }));
   }
 
@@ -681,9 +723,11 @@ class GameSaveManager extends EventEmitter {
     const displayName = this._getDisplayName(entry);
     const currentDir = path.join(this.backup.gameDir(displayName), 'current');
 
+    // Resolve the LOCAL save path (handles cross-PC username differences)
+    const localSaveBase = this._resolveLocalSaveBase(entry);
+
     // Skip auto-restore if the game's save path is already inside a synced folder.
-    // The folder sync handles delivery; game saves only provides backup/versioning.
-    if (entry.saveBase && this._isInsideSyncedFolder(entry.saveBase)) {
+    if (localSaveBase && this._isInsideSyncedFolder(localSaveBase)) {
       return false;
     }
 
@@ -698,26 +742,32 @@ class GameSaveManager extends EventEmitter {
     const syncedMtime = await this._getNewestMtime(currentDir);
     if (!syncedMtime) return false;
 
-    // Get newest mtime in the actual game save dir
-    const localMtime = await this._getNewestMtime(entry.saveBase);
+    // Get newest mtime in the actual game save dir (may not exist yet on this PC)
+    const localMtime = await this._getNewestMtime(localSaveBase);
 
     // If synced is newer (or local doesn't exist), auto-restore
     if (!localMtime || syncedMtime > localMtime) {
       // Check if game is running — skip if so
-      const locked = await this._isAnyFileLocked(entry.saveBase);
-      if (locked) {
-        console.log(`Skipping auto-restore for ${displayName}: game appears to be running`);
-        return false;
+      if (fs.existsSync(localSaveBase)) {
+        const locked = await this._isAnyFileLocked(localSaveBase);
+        if (locked) {
+          console.log(`Skipping auto-restore for ${displayName}: game appears to be running`);
+          return false;
+        }
       }
 
-      console.log(`Auto-restoring ${displayName}: synced save is newer (${new Date(syncedMtime).toISOString()} > ${localMtime ? new Date(localMtime).toISOString() : 'none'})`);
+      console.log(`Auto-restoring ${displayName} to ${localSaveBase}: synced save is newer`);
 
-      // Pre-restore safety backup
-      await this.backup.restoreCurrent(displayName);
+      // Pre-restore safety backup + restore to resolved local path
+      await this.backup.restoreCurrent(displayName, localSaveBase);
+
+      // Update entry's saveBase to the resolved local path
+      entry.saveBase = localSaveBase;
 
       this.emit('save-restored', {
         game: entry,
         source: 'auto-sync',
+        targetPath: localSaveBase,
       });
       return true;
     }
