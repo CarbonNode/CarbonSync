@@ -145,8 +145,8 @@ async function addFolderDialog() {
 function setupIPC() {
   ipcMain.handle('get-status', () => server?.getStatus() || {});
 
-  ipcMain.handle('add-folder', async (_, folderPath, name) => {
-    await server.addFolder(folderPath, name);
+  ipcMain.handle('add-folder', async (_, folderPath, name, direction, folderId) => {
+    await server.addFolder(folderPath, name, direction, folderId);
     updateTrayMenu();
     const status = server.getStatus();
     sendToUI('status-update', status);

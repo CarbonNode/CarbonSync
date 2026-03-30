@@ -232,18 +232,18 @@ function renderRemoteFolders(remoteFolders) {
             </div>
           </div>
           <div class="folder-btns">
-            <button class="btn sm green" onclick="addRemoteFolder('${escA(f.name)}')">Add</button>
+            <button class="btn sm green" onclick="addRemoteFolder('${escA(f.name)}', '${escA(f.id || '')}')">Add</button>
           </div>
         </div>
       </div>
     `).join('');
 }
 
-async function addRemoteFolder(name) {
+async function addRemoteFolder(name, folderId) {
   const localPath = await api.pickFolder();
   if (!localPath) return;
   try {
-    await api.addFolder(localPath, name, 'receive');
+    await api.addFolder(localPath, name, 'receive', folderId);
     toast(`Added ${name} — syncing to ${localPath}`, 'success');
     refresh();
   } catch (err) {

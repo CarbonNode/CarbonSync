@@ -95,6 +95,13 @@ class Config {
       this.data.apiKey = crypto.randomBytes(32).toString('hex');
       changed = true;
     }
+    // Ensure all folders have IDs (migration for pre-1.8 configs)
+    for (const folder of (this.data.folders || [])) {
+      if (!folder.id) {
+        folder.id = crypto.randomUUID();
+        changed = true;
+      }
+    }
     if (changed) this.save();
   }
 
@@ -117,7 +124,7 @@ class Config {
 
   // ---- Folder management ----
 
-  addFolder(folderPath, name, direction) {
+  addFolder(folderPath, name, direction, folderId) {
     const resolved = path.resolve(folderPath);
     if (!fs.existsSync(resolved)) {
       throw new Error(`Folder does not exist: ${resolved}`);
@@ -126,6 +133,7 @@ class Config {
       throw new Error(`Folder already synced: ${resolved}`);
     }
     this.data.folders.push({
+      id: folderId || crypto.randomUUID(),
       path: resolved,
       name: name || path.basename(resolved),
       ignorePatterns: [],

@@ -376,7 +376,7 @@ class CarbonSyncDevice extends EventEmitter {
 
         // Send our folder list to the peer
         const myFolders = this.config.folders.filter(f => f.enabled && !f.internal).map(f => ({
-          name: f.name, fileCount: this.engine?.folders.get(f.name)?.scanner.getFileCount() || 0,
+          id: f.id, name: f.name, fileCount: this.engine?.folders.get(f.name)?.scanner.getFileCount() || 0,
           direction: f.direction || 'both',
         }));
         writeFrame(client.socket, { type: MSG.FOLDER_LIST, folders: myFolders });
@@ -538,16 +538,15 @@ class CarbonSyncDevice extends EventEmitter {
    * Get all connected peers.
    */
   _getRemoteFolders() {
+    // Match by folder ID (stable across renames), fall back to name
+    const myFolderIds = new Set(this.config.folders.map(f => f.id).filter(Boolean));
     const myFolderNames = new Set(this.config.folders.map(f => f.name));
     const peers = this.config.data.peers || {};
-    // Deduplicate by folder name — show each remote folder only once (first source wins)
-    const seen = new Map(); // folderName -> entry
+    const seen = new Map(); // folderId or name -> entry
     for (const [peerKey, folders] of this.peerFolders) {
-      // Resolve device name: try outbound peers first, then inbound clients
       const peerInfo = this.peerConnections.get(peerKey);
       let deviceName = peerInfo?.deviceName || '';
       if (!deviceName) {
-        // Try inbound clients by IP match
         const ip = peerKey.split(':')[0];
         for (const c of (this.transport?.getConnectedClients() || [])) {
           if (c.ip === ip) { deviceName = c.deviceName; break; }
@@ -557,10 +556,25 @@ class CarbonSyncDevice extends EventEmitter {
       const friendlyName = peers[deviceName] || deviceName;
 
       for (const f of folders) {
-        if (myFolderNames.has(f.name)) continue;
         if (f.internal) continue;
-        if (seen.has(f.name)) continue; // Already shown from another connection
-        seen.set(f.name, {
+        // Skip if we already have this folder (match by ID first, then name)
+        if (f.id && myFolderIds.has(f.id)) continue;
+        if (myFolderNames.has(f.name)) continue;
+        const key = f.id || f.name;
+        if (seen.has(key)) continue;
+
+        // Auto-update local folder name if ID matches but name changed (rename sync)
+        if (f.id) {
+          const localFolder = this.config.folders.find(lf => lf.id === f.id);
+          if (localFolder && localFolder.name !== f.name) {
+            console.log(`Folder renamed by peer: ${localFolder.name} → ${f.name}`);
+            localFolder.name = f.name;
+            this.config.save();
+          }
+        }
+
+        seen.set(key, {
+          id: f.id,
           name: f.name,
           fileCount: f.fileCount || 0,
           direction: f.direction || 'both',
@@ -1195,7 +1209,7 @@ class CarbonSyncDevice extends EventEmitter {
 
   _sendFolderList(client) {
     const folders = this.config.folders.filter(f => f.enabled && !f.internal).map(f => ({
-      name: f.name, excludes: f.excludes || [], direction: f.direction || 'both',
+      id: f.id, name: f.name, excludes: f.excludes || [], direction: f.direction || 'both',
       fileCount: this.engine?.folders.get(f.name)?.scanner.getFileCount() || 0,
     }));
     writeFrame(client.socket, { type: MSG.FOLDER_LIST, folders });
@@ -1311,6 +1325,7 @@ class CarbonSyncDevice extends EventEmitter {
         info.name = cfgFolder?.name || engineName;
         info.excludes = cfgFolder?.excludes || [];
         info.direction = cfgFolder?.direction || 'both';
+        info.folderId = cfgFolder?.id || null;
         info.icon = cfgFolder?.icon || null;
         info.group = cfgFolder?.group || null;
         info.folderPath = cfgFolder?.path || enginePath || '';
@@ -1362,8 +1377,8 @@ class CarbonSyncDevice extends EventEmitter {
     };
   }
 
-  async addFolder(folderPath, name, direction) {
-    this.config.addFolder(folderPath, name, direction);
+  async addFolder(folderPath, name, direction, folderId) {
+    this.config.addFolder(folderPath, name, direction, folderId);
     const folder = this.config.folders.find(f => f.path === path.resolve(folderPath));
     if (folder) {
       this.engine.addFolder(folder);
