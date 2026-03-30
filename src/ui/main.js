@@ -627,9 +627,29 @@ app.on('ready', async () => {
   });
 });
 
-app.on('before-quit', async () => {
+app.on('before-quit', (e) => {
+  if (app._quitting) return; // Already handled
+  app._quitting = true;
   app.isQuitting = true;
-  if (server) await server.stop();
+
+  // Force synchronous save of critical data before exit
+  try {
+    if (server?.gameSaveManager?._library?.size > 0) {
+      const games = Array.from(server.gameSaveManager._library.values()).map(g => ({
+        id: g.id, name: g.name, displayName: g.displayName, saveBase: g.saveBase,
+        rootKey: g.rootKey, relPath: g.relPath, enabled: g.enabled, isHeuristic: g.isHeuristic,
+        lastBackup: g.lastBackup, backupCount: g.backupCount, excludes: g.excludes,
+        knownDevices: g.knownDevices || {},
+      }));
+      const data = JSON.stringify({ version: 1, lastUpdated: new Date().toISOString(), games });
+      require('fs').writeFileSync(server.gameSaveManager._libraryPath, data, 'utf-8');
+      console.log(`Saved ${games.length} games on quit`);
+    }
+  } catch (err) {
+    console.error('Failed to save library on quit:', err.message);
+  }
+
+  if (server) server.stop().catch(() => {});
 });
 
 app.on('window-all-closed', () => { /* stay in tray */ });

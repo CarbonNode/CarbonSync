@@ -494,7 +494,13 @@ class GameBackup {
     } catch { return { fileCount, totalSize }; }
 
     for (const entry of entries) {
-      if (entry.name.startsWith('_meta') || entry.name.endsWith('.tmp')) continue;
+      const nl = entry.name.toLowerCase();
+      if (entry.name.startsWith('_meta') || nl.endsWith('.tmp') || nl.endsWith('.partial')) continue;
+      if (nl === 'player.log' || nl === 'player-prev.log' || nl === 'output_log.txt') continue;
+      if (nl === 'steam_autocloud.vdf' || nl === 'eventcache') continue;
+      if (nl === 'crash.dmp' || nl === 'error.log' || nl === 'debug.log') continue;
+      if (entry.name === 'Unity' || entry.name === 'ShaderCache') continue;
+
       const srcPath = path.join(src, entry.name);
       const destPath = path.join(dest, entry.name);
 
