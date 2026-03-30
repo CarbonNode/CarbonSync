@@ -606,6 +606,12 @@ class GameSaveManager extends EventEmitter {
     const displayName = this._getDisplayName(entry);
     const currentDir = path.join(this.backup.gameDir(displayName), 'current');
 
+    // Skip auto-restore if the game's save path is already inside a synced folder.
+    // The folder sync handles delivery; game saves only provides backup/versioning.
+    if (entry.saveBase && this._isInsideSyncedFolder(entry.saveBase)) {
+      return false;
+    }
+
     // Check if current/ exists (from sync)
     try {
       await fsp.access(currentDir);
@@ -670,6 +676,25 @@ class GameSaveManager extends EventEmitter {
     };
     await walk(dir);
     return newest || null;
+  }
+
+  /**
+   * Check if a path is inside any folder that's already being synced
+   * via the Folders tab. If so, folder sync handles delivery — no need
+   * for game-save auto-restore to write there too.
+   */
+  _isInsideSyncedFolder(absPath) {
+    const resolved = path.resolve(absPath);
+    for (const folder of this.config.folders) {
+      if (!folder.enabled) continue;
+      const folderResolved = path.resolve(folder.path);
+      // Skip the game-saves folder itself — that's our own sync folder
+      if (folder.name === 'Game Saves') continue;
+      if (resolved.startsWith(folderResolved + path.sep) || resolved === folderResolved) {
+        return true;
+      }
+    }
+    return false;
   }
 
   async _isAnyFileLocked(dir) {

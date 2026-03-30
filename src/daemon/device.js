@@ -171,17 +171,33 @@ class CarbonSyncDevice extends EventEmitter {
       try {
         await this.gameSaveManager.start();
 
-        // Auto-register game-saves folder for sync (direction: both)
+        // Auto-register game-saves folder for sync (direction: both, hidden from Folders tab)
         const gameSavesDir = path.join(this.configDir, 'game-saves');
         const alreadySynced = this.config.folders.some(f => path.resolve(f.path) === path.resolve(gameSavesDir));
         if (!alreadySynced && fs.existsSync(gameSavesDir)) {
           try {
-            await this.addFolder(gameSavesDir, 'Game Saves', 'both');
+            this.config.data.folders.push({
+              path: path.resolve(gameSavesDir),
+              name: 'Game Saves',
+              ignorePatterns: [],
+              excludes: [],
+              direction: 'both',
+              enabled: true,
+              internal: true, // Hidden from Folders tab UI
+            });
+            this.config.save();
+            this.engine.addFolder(this.config.folders.find(f => f.name === 'Game Saves'));
+            await this.engine.rescan('Game Saves');
             console.log('Auto-registered game-saves folder for sync');
           } catch (err) {
-            if (!err.message.includes('already synced')) {
-              console.error('Failed to auto-register game-saves:', err.message);
-            }
+            console.error('Failed to auto-register game-saves:', err.message);
+          }
+        } else {
+          // Ensure existing entry is marked internal
+          const existing = this.config.folders.find(f => f.name === 'Game Saves');
+          if (existing && !existing.internal) {
+            existing.internal = true;
+            this.config.save();
           }
         }
       } catch (err) {
@@ -1137,6 +1153,7 @@ class CarbonSyncDevice extends EventEmitter {
         const cfgFolder = this.config.folders.find(f => f.name === name);
         info.excludes = cfgFolder?.excludes || [];
         info.direction = cfgFolder?.direction || 'both';
+        info.internal = cfgFolder?.internal || false;
 
         info.devices = {};
         info.devices[this.config.deviceName] = {

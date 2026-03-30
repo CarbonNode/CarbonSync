@@ -55,6 +55,8 @@ async function refresh() {
 
 // ---- Folders ----
 function renderFolders(folders) {
+  // Filter out internal folders (Game Saves — managed in Games tab)
+  folders = folders.filter(f => !f.internal);
   const el = document.getElementById('folders-list');
   if (folders.length === 0) {
     el.innerHTML = '<div class="empty">No folders synced yet. Add a folder or drag one in.</div>';
