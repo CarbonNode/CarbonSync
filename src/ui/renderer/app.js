@@ -257,7 +257,7 @@ function renderActivity() {
 
 // ---- Devices ----
 function renderDevices(devices) {
-  // Filter out self (by deviceId or hostname matching this device's name)
+  // Filter out self
   const myId = currentStatus.deviceId || '';
   const myName = currentStatus.deviceName || '';
   devices = devices.filter(d => {
@@ -266,27 +266,76 @@ function renderDevices(devices) {
     return true;
   });
 
-  const el = document.getElementById('devices-list');
-  if (devices.length === 0) {
-    el.innerHTML = '<div class="empty">No other CarbonSync devices found</div>';
-    return;
+  // Build set of connected peer IPs for quick lookup
+  const connectedIPs = new Set();
+  for (const p of (currentStatus.connectedPeers || [])) {
+    if (p.ip) connectedIPs.add(p.ip);
   }
-  el.innerHTML = devices.map(d => `
-    <div class="device-card">
-      <div>
-        <div class="device-name">
-          <span>${esc(d.friendlyName || d.hostname)}</span>
-          ${d.friendlyName !== d.hostname ? `<span class="device-hostname">(${esc(d.hostname)})</span>` : ''}
-          <button class="btn sm ghost rename-btn" data-hostname="${escA(d.hostname)}" onclick="renamePeer('${escA(d.hostname)}', '${escA(d.friendlyName || d.hostname)}')">Rename</button>
+  for (const p of (currentStatus.savedPeers || [])) {
+    if (p.ip) connectedIPs.add(p.ip);
+  }
+
+  const el = document.getElementById('devices-list');
+
+  // Split into connected and discovered-only
+  const connected = devices.filter(d => connectedIPs.has(d.ip));
+  const discovered = devices.filter(d => !connectedIPs.has(d.ip));
+
+  let html = '';
+
+  if (connected.length > 0) {
+    html += connected.map(d => `
+      <div class="device-card">
+        <div>
+          <div class="device-name">
+            <span>${esc(d.friendlyName || d.hostname)}</span>
+            ${d.friendlyName !== d.hostname ? `<span class="device-hostname">(${esc(d.hostname)})</span>` : ''}
+            <button class="btn sm ghost rename-btn" onclick="renamePeer('${escA(d.hostname)}', '${escA(d.friendlyName || d.hostname)}')">Rename</button>
+          </div>
+          <div class="device-detail">${d.ip}:${d.port}</div>
         </div>
-        <div class="device-detail">${d.ip}:${d.port}</div>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <span class="device-role connected">Connected</span>
+          <button class="btn sm red" onclick="removePeer('${escA(d.ip)}', ${d.port})">Remove</button>
+        </div>
       </div>
-      <div style="display:flex;align-items:center;gap:6px;">
-        <span class="device-role ${d.role}">${d.role}</span>
-        <button class="btn sm red" onclick="removePeer('${escA(d.ip)}', ${d.port})">Remove</button>
+    `).join('');
+  }
+
+  if (discovered.length > 0) {
+    html += `<div class="devices-section-label">Discovered on network</div>`;
+    html += discovered.map(d => `
+      <div class="device-card discovered">
+        <div>
+          <div class="device-name">
+            <span>${esc(d.friendlyName || d.hostname)}</span>
+            ${d.friendlyName !== d.hostname ? `<span class="device-hostname">(${esc(d.hostname)})</span>` : ''}
+          </div>
+          <div class="device-detail">${d.ip}:${d.port}</div>
+        </div>
+        <div style="display:flex;align-items:center;gap:6px;">
+          <button class="btn sm green" onclick="connectDiscovered('${escA(d.ip)}', ${d.port})">Connect</button>
+        </div>
       </div>
-    </div>
-  `).join('');
+    `).join('');
+  }
+
+  if (!html) {
+    html = '<div class="empty">No other CarbonSync devices found on the network</div>';
+  }
+
+  el.innerHTML = html;
+}
+
+async function connectDiscovered(ip, port) {
+  toast(`Connecting to ${ip}:${port}...`, 'info');
+  try {
+    const result = await api.addPeer(ip, port);
+    if (result.error) toast(result.error, 'error');
+    else { toast(`Connected to ${result.deviceName || ip}`, 'success'); refresh(); }
+  } catch (err) {
+    toast(`Failed: ${err.message}`, 'error');
+  }
 }
 
 function renamePeer(hostname, currentName) {

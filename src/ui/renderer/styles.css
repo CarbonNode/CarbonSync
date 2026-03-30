@@ -209,6 +209,19 @@ body {
 }
 .device-role.server { background: #14532d; color: var(--green); }
 .device-role.client { background: #1e3a5f; color: var(--accent); }
+.device-role.connected { background: #14532d; color: var(--green); }
+
+.device-card.discovered {
+  border-style: dashed;
+  opacity: 0.8;
+}
+.device-card.discovered:hover { opacity: 1; }
+
+.devices-section-label {
+  font-size: 11px; color: var(--text-dim); text-transform: uppercase;
+  letter-spacing: 0.5px; font-weight: 600;
+  padding: 10px 0 6px 0;
+}
 
 /* ---- Settings ---- */
 .settings-grid {
