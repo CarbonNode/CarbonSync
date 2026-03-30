@@ -391,6 +391,16 @@ app.on('ready', async () => {
   server.start().then(() => {
     updateTrayMenu();
     sendToUI('status-update', server.getStatus());
+
+    // Forward game save events to renderer
+    if (server.gameSaveManager) {
+      server.gameSaveManager.on('game-detected', (info) => sendToUI('game-detected', info));
+      server.gameSaveManager.on('save-backed-up', (info) => {
+        sendToUI('save-backed-up', info);
+        sendToUI('activity', { type: 'game-backup', message: `Backed up ${info.game?.displayName || info.game?.name}: ${info.fileCount} files`, time: Date.now() });
+      });
+      server.gameSaveManager.on('game-running', (info) => sendToUI('game-running', info));
+    }
   }).catch(err => {
     console.error('Server start failed:', err);
     sendToUI('activity', { type: 'error', message: `Server failed: ${err.message}`, time: Date.now() });

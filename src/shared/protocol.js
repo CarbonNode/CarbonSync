@@ -36,6 +36,10 @@ const MSG = {
   SUBSCRIBE: 'subscribe',   // Client subscribes to folder changes
   NOTIFY: 'notify',         // Server pushes change notification to subscribed clients
 
+  // Game saves
+  SAVE_PUSH: 'save_push',             // Client pushes a game save to server
+  SAVE_PUSH_ACK: 'save_push_ack',     // Server acknowledges save push
+
   // Status
   PROGRESS: 'progress',     // Sync progress update
   ERROR: 'error',

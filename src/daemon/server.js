@@ -15,6 +15,7 @@ const { Discovery } = require('./discovery');
 const { ensureFirewallRule } = require('./firewall');
 const { ensureCerts } = require('./tls-certs');
 const { MSG, SYNC_STATE } = require('../shared/protocol');
+const { GameSaveManager } = require('./game-save-manager');
 
 const INDEX_PAGE_SIZE = 5000;
 
@@ -28,6 +29,7 @@ class CarbonSyncServer extends EventEmitter {
     this.discovery = null;
     this._scanInterval = null;
     this.deviceSync = new Map(); // deviceName -> { folder -> { status, progress, lastSync } }
+    this.gameSaveManager = null;
   }
 
   async start() {
@@ -60,6 +62,17 @@ class CarbonSyncServer extends EventEmitter {
     });
 
     await this.engine.start();
+
+    // Game save detection & backup
+    this.gameSaveManager = new GameSaveManager({
+      configDir: this.configDir,
+      config: this.config,
+    });
+    try {
+      await this.gameSaveManager.start();
+    } catch (err) {
+      console.error('Game save manager failed to start:', err.message);
+    }
 
     // TLS certificates
     const certs = ensureCerts(this.configDir);
@@ -158,6 +171,9 @@ class CarbonSyncServer extends EventEmitter {
               writeFrame(client.socket, { type: 'excludes_updated', folder: msg.folder, excludes: msg.excludes, _requestId: msg._requestId });
             }
           }
+          break;
+        case MSG.SAVE_PUSH:
+          this._handleSavePush(client, msg);
           break;
         case MSG.PING:
           writeFrame(client.socket, { type: MSG.PONG, _requestId: msg._requestId });
@@ -290,6 +306,29 @@ class CarbonSyncServer extends EventEmitter {
     }
   }
 
+  async _handleSavePush(client, msg) {
+    // Client is pushing a game save to the server
+    if (!this.gameSaveManager) {
+      writeFrame(client.socket, { type: MSG.ERROR, message: 'Game save manager not available', _requestId: msg._requestId });
+      return;
+    }
+
+    try {
+      const { gameId, gameName, saveBase, sourceDevice } = msg;
+      // The client will follow with file data via the existing streaming mechanism
+      // For now, acknowledge that we can receive it
+      writeFrame(client.socket, {
+        type: MSG.SAVE_PUSH_ACK,
+        gameId,
+        status: 'accepted',
+        _requestId: msg._requestId,
+      });
+      console.log(`Received save push from ${client.deviceName} for ${gameName}`);
+    } catch (err) {
+      writeFrame(client.socket, { type: MSG.ERROR, message: err.message, _requestId: msg._requestId });
+    }
+  }
+
   // ---- Status ----
 
   getStatus() {
@@ -332,6 +371,7 @@ class CarbonSyncServer extends EventEmitter {
       tlsEnabled: !!this.transport?.tlsKey,
       connectedClients: this.transport?.getClientCount() || 0,
       folders,
+      gameSaves: this.gameSaveManager?.getLibrary() || [],
       discoveredDevices: (this.discovery?.getServices() || []).map(d => ({
         ...d,
         friendlyName: peers[d.hostname] || d.hostname,

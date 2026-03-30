@@ -3,6 +3,9 @@ const activityLog = [];
 const MAX_ACTIVITY = 100;
 let currentStatus = {};
 
+let gameLibrary = [];
+const expandedGames = new Set();
+
 async function init() {
   setupTitlebar();
   setupTabs();
@@ -10,6 +13,7 @@ async function init() {
   setupDragDrop();
   setupDevices();
   setupSettings();
+  setupGames();
   setupLiveEvents();
   await refresh();
   setInterval(refresh, 8000);
@@ -58,9 +62,6 @@ function renderFolders(folders) {
   }
 
   el.innerHTML = folders.map(f => {
-    const sizeClass = f.totalSize > 10e9 ? 'huge' : f.totalSize > 1e9 ? 'large' : f.totalSize > 100e6 ? 'medium' : 'small';
-    const maxSize = Math.max(...folders.map(x => x.totalSize || 0), 1);
-    const pct = Math.max(2, Math.round((f.totalSize / maxSize) * 100));
     const excludeCount = (f.excludes || []).length;
 
     // Device sync icons
@@ -97,7 +98,6 @@ function renderFolders(folders) {
           <button class="btn sm red" onclick="removeFolder('${escA(f.path)}')">Remove</button>
         </div>
       </div>
-      <div class="size-bar"><div class="size-fill ${sizeClass}" style="width:${pct}%"></div></div>
     </div>`;
   }).join('');
 }
@@ -334,6 +334,298 @@ function setupSettings() {
   }).catch(() => {});
 }
 
+// ---- Games ----
+
+async function refreshGames() {
+  try { gameLibrary = await api.getGameLibrary(); } catch { gameLibrary = []; }
+  renderGames();
+}
+
+function renderGames() {
+  const el = document.getElementById('games-list');
+  const countEl = document.getElementById('games-count');
+  const enabledCount = gameLibrary.filter(g => g.enabled).length;
+  countEl.textContent = `${gameLibrary.length} game${gameLibrary.length !== 1 ? 's' : ''} detected (${enabledCount} active)`;
+
+  if (gameLibrary.length === 0) {
+    el.innerHTML = '<div class="empty">No game saves detected yet. Games will appear here automatically when saves are found in Documents or AppData.</div>';
+    return;
+  }
+
+  el.innerHTML = gameLibrary.map(g => {
+    const isExpanded = expandedGames.has(g.id);
+    const displayName = g.displayName || g.name;
+    const timeAgo = g.lastBackup ? fmtTimeAgo(g.lastBackup) : 'never';
+
+    return `<div class="game-card${g.enabled ? '' : ' disabled'}">
+      <div class="game-header" onclick="toggleGameExpand('${escA(g.id)}')">
+        <svg class="game-chevron${isExpanded ? ' expanded' : ''}" viewBox="0 0 24 24" width="16" height="16">
+          <path d="M9 6l6 6-6 6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        </svg>
+        <div class="game-info">
+          <div class="game-name">
+            ${esc(displayName)}
+            ${g.isHeuristic && !isGameConfirmed(g.id) ? '<span class="game-heuristic" title="Auto-detected — click to confirm or dismiss">?</span>' : ''}
+            ${g.running ? '<span class="game-running">RUNNING</span>' : ''}
+          </div>
+          <div class="game-meta">
+            <span>Last backup: <strong>${timeAgo}</strong></span>
+            <span>${g.backupCount || 0} version${(g.backupCount || 0) !== 1 ? 's' : ''}</span>
+            ${g.excludes?.length > 0 ? `<span class="exclude-badge">${g.excludes.length} exclude${g.excludes.length > 1 ? 's' : ''}</span>` : ''}
+          </div>
+        </div>
+        <div class="game-actions" onclick="event.stopPropagation()">
+          <label class="game-toggle" title="${g.enabled ? 'Disable' : 'Enable'} sync">
+            <input type="checkbox" ${g.enabled ? 'checked' : ''} onchange="toggleGameSync('${escA(g.id)}', this.checked)">
+            <span class="toggle-slider"></span>
+          </label>
+          <button class="btn sm ghost" onclick="openGameSettings('${escA(g.id)}')" title="Settings">&#9881;</button>
+          <button class="btn sm ghost" onclick="backupGameNow('${escA(g.id)}')" title="Backup now">&#8635;</button>
+        </div>
+      </div>
+      ${isExpanded ? `<div class="save-history" id="history-${g.id}"><div class="empty" style="padding:8px 0;">Loading...</div></div>` : ''}
+    </div>`;
+  }).join('');
+
+  // Load history for expanded games
+  for (const id of expandedGames) {
+    loadGameHistory(id);
+  }
+}
+
+function isGameConfirmed(gameId) {
+  // Check local cache — this is a simplification, real check is server-side
+  const game = gameLibrary.find(g => g.id === gameId);
+  return game && !game.isHeuristic;
+}
+
+async function toggleGameExpand(gameId) {
+  if (expandedGames.has(gameId)) {
+    expandedGames.delete(gameId);
+  } else {
+    expandedGames.add(gameId);
+  }
+  renderGames();
+}
+
+async function loadGameHistory(gameId) {
+  const el = document.getElementById(`history-${gameId}`);
+  if (!el) return;
+
+  try {
+    const history = await api.getSaveHistory(gameId);
+    if (history.length === 0) {
+      el.innerHTML = '<div class="empty" style="padding:8px 0;">No backups yet</div>';
+      return;
+    }
+
+    el.innerHTML = history.map(h => {
+      const date = new Date(h.timestamp);
+      const dateStr = date.toLocaleDateString() + ' ' + date.toLocaleTimeString();
+      return `<div class="save-row">
+        <span class="save-time">${dateStr}</span>
+        <span class="save-detail">${h.fileCount} file${h.fileCount !== 1 ? 's' : ''}, ${fmt(h.totalSize)}</span>
+        <span class="save-device">${esc(h.sourceDevice)}</span>
+        <button class="btn sm" onclick="restoreSave('${escA(gameId)}', '${escA(h.dir)}')">Restore</button>
+      </div>`;
+    }).join('');
+  } catch (err) {
+    el.innerHTML = `<div class="empty" style="padding:8px 0;color:var(--red);">Error: ${esc(err.message)}</div>`;
+  }
+}
+
+async function toggleGameSync(gameId, enabled) {
+  await api.toggleGameSync(gameId, enabled);
+  toast(enabled ? 'Sync enabled' : 'Sync disabled', 'success');
+  refreshGames();
+}
+
+async function backupGameNow(gameId) {
+  try {
+    const result = await api.backupGameNow(gameId);
+    if (result) toast(`Backed up: ${result.fileCount} files`, 'success');
+    else toast('No files to back up', 'info');
+    refreshGames();
+  } catch (err) {
+    toast(`Backup failed: ${err.message}`, 'error');
+  }
+}
+
+async function restoreSave(gameId, backupDir) {
+  if (!confirm('Restore this save? Current game saves will be overwritten.')) return;
+  try {
+    const result = await api.restoreSave(gameId, backupDir);
+    toast(`Restored ${result.restoredFiles} files`, 'success');
+  } catch (err) {
+    toast(`Restore failed: ${err.message}`, 'error');
+  }
+}
+
+// ---- Game Settings Popup ----
+
+let currentGameId = null;
+
+async function openGameSettings(gameId) {
+  currentGameId = gameId;
+  const game = gameLibrary.find(g => g.id === gameId);
+  if (!game) return;
+
+  const popup = document.getElementById('game-settings-popup');
+  document.getElementById('game-popup-name').textContent = game.displayName || game.name;
+  document.getElementById('game-rename-input').value = game.displayName || game.name;
+
+  // Load excludes
+  const excludes = await api.getGameExcludes(gameId);
+  renderGameExcludes(excludes);
+
+  popup.classList.remove('hidden');
+}
+
+function renderGameExcludes(excludes) {
+  const list = document.getElementById('game-excludes-list');
+  list.innerHTML = excludes.length > 0
+    ? excludes.map((e, i) => `<div class="exclude-item">
+        <span class="exclude-pattern">${esc(e)}</span>
+        <button class="btn sm red" onclick="removeGameExclude(${i})">&#10005;</button>
+      </div>`).join('')
+    : '<div class="empty">No excludes. All save files will be backed up.</div>';
+}
+
+function closeGamePopup() {
+  document.getElementById('game-settings-popup').classList.add('hidden');
+  currentGameId = null;
+}
+
+async function addGameExclude() {
+  const input = document.getElementById('game-new-exclude');
+  const pattern = input.value.trim();
+  if (!pattern || !currentGameId) return;
+
+  const excludes = await api.getGameExcludes(currentGameId);
+  excludes.push(pattern);
+  await api.setGameExcludes(currentGameId, excludes);
+  input.value = '';
+  renderGameExcludes(excludes);
+  refreshGames();
+  toast(`Exclude added: ${pattern}`, 'success');
+}
+
+async function removeGameExclude(index) {
+  if (!currentGameId) return;
+  const excludes = await api.getGameExcludes(currentGameId);
+  excludes.splice(index, 1);
+  await api.setGameExcludes(currentGameId, excludes);
+  renderGameExcludes(excludes);
+  refreshGames();
+}
+
+async function renameCurrentGame() {
+  if (!currentGameId) return;
+  const name = document.getElementById('game-rename-input').value.trim();
+  if (!name) return;
+  await api.renameGame(currentGameId, name);
+  document.getElementById('game-popup-name').textContent = name;
+  toast(`Renamed to: ${name}`, 'success');
+  refreshGames();
+}
+
+async function removeCurrentGame() {
+  if (!currentGameId) return;
+  if (!confirm('Remove this game? Backups can optionally be deleted.')) return;
+  const deleteBackups = confirm('Also delete all backups for this game?');
+  await api.removeGame(currentGameId, deleteBackups);
+  closeGamePopup();
+  toast('Game removed', 'info');
+  refreshGames();
+}
+
+// ---- Add Custom Game Popup ----
+
+function openAddGamePopup() {
+  document.getElementById('add-game-popup').classList.remove('hidden');
+  document.getElementById('custom-game-name').value = '';
+  document.getElementById('custom-game-path').value = '';
+}
+
+function closeAddGamePopup() {
+  document.getElementById('add-game-popup').classList.add('hidden');
+}
+
+async function pickGameFolder() {
+  const p = await api.pickGameFolder();
+  if (p) document.getElementById('custom-game-path').value = p;
+}
+
+async function confirmAddGame() {
+  const name = document.getElementById('custom-game-name').value.trim();
+  const savePath = document.getElementById('custom-game-path').value.trim();
+  if (!name) { toast('Enter a game name', 'error'); return; }
+  if (!savePath) { toast('Select a save folder', 'error'); return; }
+
+  try {
+    await api.addCustomGame({ name, savePath });
+    toast(`Added: ${name}`, 'success');
+    closeAddGamePopup();
+    refreshGames();
+  } catch (err) {
+    toast(`Failed: ${err.message}`, 'error');
+  }
+}
+
+function setupGames() {
+  document.getElementById('btn-scan-games').addEventListener('click', async () => {
+    const btn = document.getElementById('btn-scan-games');
+    btn.disabled = true; btn.textContent = 'Scanning...';
+    try {
+      const result = await api.scanGames();
+      toast(`Found ${result.found} game(s), ${result.new} new`, 'success');
+      refreshGames();
+    } catch (err) { toast(`Scan failed: ${err.message}`, 'error'); }
+    btn.disabled = false; btn.textContent = 'Rescan';
+  });
+
+  document.getElementById('btn-add-game').addEventListener('click', openAddGamePopup);
+
+  // Game settings popup
+  document.getElementById('btn-close-game-popup').addEventListener('click', closeGamePopup);
+  document.getElementById('game-settings-popup').addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) closeGamePopup();
+  });
+  document.getElementById('btn-game-rename').addEventListener('click', renameCurrentGame);
+  document.getElementById('game-rename-input').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') renameCurrentGame();
+  });
+  document.getElementById('btn-game-add-exclude').addEventListener('click', addGameExclude);
+  document.getElementById('game-new-exclude').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') addGameExclude();
+  });
+  document.getElementById('btn-game-remove').addEventListener('click', removeCurrentGame);
+
+  // Add game popup
+  document.getElementById('btn-close-add-game').addEventListener('click', closeAddGamePopup);
+  document.getElementById('add-game-popup').addEventListener('click', (e) => {
+    if (e.target === e.currentTarget) closeAddGamePopup();
+  });
+  document.getElementById('btn-pick-game-folder').addEventListener('click', pickGameFolder);
+  document.getElementById('btn-confirm-add-game').addEventListener('click', confirmAddGame);
+
+  // Initial load
+  refreshGames();
+}
+
+function fmtTimeAgo(isoString) {
+  if (!isoString) return 'never';
+  const diff = Date.now() - new Date(isoString).getTime();
+  if (diff < 0) return 'just now';
+  const mins = Math.floor(diff / 60000);
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.floor(hours / 24);
+  return `${days}d ago`;
+}
+
 // ---- Live Events ----
 function setupLiveEvents() {
   api.onStatusUpdate(refresh);
@@ -356,6 +648,7 @@ function setupLiveEvents() {
     if (a.type === 'client-connected') { addActivity('connect', `${a.deviceName || 'Client'} connected`); toast(`${a.deviceName} connected`, 'success'); }
     else if (a.type === 'client-disconnected') addActivity('disconnect', `${a.deviceName || 'Client'} disconnected`);
     else if (a.type === 'file-changes') addActivity('change', `${a.count} file(s) changed in ${a.folder}`);
+    else if (a.type === 'game-backup') addActivity('change', a.message);
     const badge = document.getElementById('status-badge');
     if (a.type === 'client-disconnected') {
       badge.className = 'badge yellow';
