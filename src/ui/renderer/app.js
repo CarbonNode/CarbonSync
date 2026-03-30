@@ -254,7 +254,7 @@ function renderDevices(devices) {
         <div class="device-name">
           <span>${esc(d.friendlyName || d.hostname)}</span>
           ${d.friendlyName !== d.hostname ? `<span class="device-hostname">(${esc(d.hostname)})</span>` : ''}
-          <button class="btn sm ghost" onclick="renamePeer('${escA(d.hostname)}', '${escA(d.friendlyName || d.hostname)}')">Rename</button>
+          <button class="btn sm ghost rename-btn" data-hostname="${escA(d.hostname)}" onclick="renamePeer('${escA(d.hostname)}', '${escA(d.friendlyName || d.hostname)}')">Rename</button>
         </div>
         <div class="device-detail">${d.ip}:${d.port}</div>
       </div>
