@@ -900,6 +900,16 @@ class CarbonSyncDevice extends EventEmitter {
         case 'transfer_end':
           await this._handleTransferEnd(client, msg);
           break;
+        case MSG.FOLDER_LIST:
+          // Inbound client sent us their folder list
+          if (client.deviceName) {
+            const ip = client.socket?.remoteAddress?.replace('::ffff:', '') || '';
+            const port = client.socket?.remotePort;
+            const key = `${ip}:${port}`;
+            this.peerFolders.set(key, msg.folders || []);
+            this.emit('peer-folders', { peer: key, deviceName: client.deviceName, folders: msg.folders || [] });
+          }
+          break;
         case MSG.PING:
           writeFrame(client.socket, { type: MSG.PONG, _requestId: msg._requestId });
           break;
@@ -1150,8 +1160,8 @@ class CarbonSyncDevice extends EventEmitter {
   }
 
   _sendFolderList(client) {
-    const folders = this.config.folders.filter(f => f.enabled).map(f => ({
-      name: f.name, path: f.path, excludes: f.excludes || [], direction: f.direction || 'both',
+    const folders = this.config.folders.filter(f => f.enabled && !f.internal).map(f => ({
+      name: f.name, excludes: f.excludes || [], direction: f.direction || 'both',
       fileCount: this.engine?.folders.get(f.name)?.scanner.getFileCount() || 0,
     }));
     writeFrame(client.socket, { type: MSG.FOLDER_LIST, folders });

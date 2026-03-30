@@ -496,6 +496,9 @@ app.on('ready', async () => {
   server.on('sync-progress-update', () => {
     sendToUI('status-update', server.getStatus());
   });
+  server.on('peer-folders', () => {
+    sendToUI('status-update', server.getStatus());
+  });
   server.on('sync-request', (request) => {
     console.log(`Sync request from: ${request.deviceName} (${request.ip})`);
     sendToUI('sync-request', request);
