@@ -167,7 +167,13 @@ function toggleGroup(name) {
 }
 
 function setGroupPrompt(folderPath) {
-  const el = document.querySelector(`.folder-card[data-path="${CSS.escape(folderPath)}"] .folder-name span`);
+  // Find card by matching data-path attribute (handles backslashes in Windows paths)
+  const cards = document.querySelectorAll('.folder-card');
+  let card = null;
+  for (const c of cards) {
+    if (c.dataset.path === folderPath) { card = c; break; }
+  }
+  const el = card?.querySelector('.folder-name span');
   if (!el) return;
 
   const input = document.createElement('input');
@@ -325,8 +331,12 @@ function setupFolderActions() {
 }
 
 function renameFolder(folderPath, currentName) {
-  // Find the specific card by path, not name (handles duplicate names)
-  const card = document.querySelector(`.folder-card[data-path="${CSS.escape(folderPath)}"]`);
+  // Find the specific card by path, not name (handles duplicate names + Windows backslashes)
+  const cards = document.querySelectorAll('.folder-card');
+  let card = null;
+  for (const c of cards) {
+    if (c.dataset.path === folderPath) { card = c; break; }
+  }
   const nameEl = card?.querySelector('.folder-name span');
   if (nameEl) {
     const input = document.createElement('input');
@@ -1146,6 +1156,17 @@ function setupGames() {
     if (result.error) toast(`Backup failed: ${result.error}`, 'error');
     else toast(`Backed up ${result.success} game(s)${result.skipped ? `, ${result.skipped} skipped` : ''}`, 'success');
     refreshGames();
+  });
+
+  // Clean Backups
+  document.getElementById('btn-clean-backups').addEventListener('click', async () => {
+    const btn = document.getElementById('btn-clean-backups');
+    btn.disabled = true; btn.textContent = 'Cleaning...';
+    try {
+      const result = await api.cleanBackups();
+      toast(`Cleaned ${result.removed} junk file(s) from backups`, 'success');
+    } catch (err) { toast(`Clean failed: ${err.message}`, 'error'); }
+    btn.disabled = false; btn.textContent = 'Clean Backups';
   });
 
   document.getElementById('btn-add-game').addEventListener('click', openAddGamePopup);

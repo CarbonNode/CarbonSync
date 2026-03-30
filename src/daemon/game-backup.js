@@ -484,6 +484,38 @@ class GameBackup {
   /**
    * Copy a directory to a single destination (used for pre-restore snapshots).
    */
+  /**
+   * Clean junk files from all existing backups.
+   */
+  async cleanBackups() {
+    const junkFiles = new Set(['player.log', 'player-prev.log', 'output_log.txt',
+      'steam_autocloud.vdf', 'eventcache', 'crash.dmp', 'error.log', 'debug.log']);
+    const junkDirs = new Set(['unity', 'shadercache']);
+    let removed = 0;
+
+    const walk = async (dir) => {
+      let entries;
+      try { entries = await fsp.readdir(dir, { withFileTypes: true }); } catch { return; }
+      for (const entry of entries) {
+        const full = path.join(dir, entry.name);
+        const nl = entry.name.toLowerCase();
+        if (entry.isDirectory()) {
+          if (junkDirs.has(nl)) {
+            try { await fsp.rm(full, { recursive: true }); removed++; } catch {}
+          } else {
+            await walk(full);
+          }
+        } else if (junkFiles.has(nl)) {
+          try { await fsp.unlink(full); removed++; } catch {}
+        }
+      }
+    };
+
+    await walk(this.baseDir);
+    console.log(`Cleaned ${removed} junk files/dirs from backups`);
+    return { removed };
+  }
+
   async _copyDirSingle(src, dest) {
     let fileCount = 0;
     let totalSize = 0;

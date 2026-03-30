@@ -417,6 +417,10 @@ function setupIPC() {
     return { started: true };
   });
 
+  ipcMain.handle('clean-backups', async () => {
+    return server?.gameSaveManager?.backup?.cleanBackups() || { removed: 0 };
+  });
+
   ipcMain.handle('backup-all', () => {
     // Run in background — don't block UI
     if (!server?.gameSaveManager) return { success: 0, skipped: 0 };
