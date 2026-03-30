@@ -119,6 +119,32 @@
     </div>
   </div>
 
+  <!-- Folder Settings Popup -->
+  <div id="folder-settings-popup" class="popup-overlay hidden">
+    <div class="popup-box">
+      <div class="popup-header">
+        <h3>Folder Settings — <span id="popup-folder-name"></span></h3>
+        <button class="btn sm ghost" id="btn-close-popup">✕</button>
+      </div>
+      <div class="popup-body">
+        <h4>Exclude Patterns</h4>
+        <p class="popup-hint">Files/folders matching these patterns won't sync. Applies to all devices.</p>
+        <div id="excludes-list"></div>
+        <div class="exclude-add">
+          <input type="text" id="new-exclude" placeholder="e.g. node_modules/ or *.log or .git/">
+          <button class="btn sm" id="btn-add-exclude">Add</button>
+        </div>
+        <div class="popup-examples">
+          <span class="example" onclick="document.getElementById('new-exclude').value='node_modules/'">node_modules/</span>
+          <span class="example" onclick="document.getElementById('new-exclude').value='*.log'">*.log</span>
+          <span class="example" onclick="document.getElementById('new-exclude').value='.git/'">`.git/`</span>
+          <span class="example" onclick="document.getElementById('new-exclude').value='*.tmp'">*.tmp</span>
+          <span class="example" onclick="document.getElementById('new-exclude').value='__pycache__/'">__pycache__/</span>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Toast container -->
   <div id="toast-container"></div>
 

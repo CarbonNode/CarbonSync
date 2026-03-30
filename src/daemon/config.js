@@ -110,9 +110,26 @@ class Config {
       path: resolved,
       name: name || path.basename(resolved),
       ignorePatterns: [],
+      excludes: [],  // Per-folder exclude patterns (applied everywhere)
       enabled: true,
     });
     this.save();
+  }
+
+  /**
+   * Update exclude patterns for a folder.
+   */
+  setFolderExcludes(folderPath, excludes) {
+    const folder = this.data.folders.find(f => f.path === path.resolve(folderPath));
+    if (folder) {
+      folder.excludes = excludes;
+      this.save();
+    }
+  }
+
+  getFolderExcludes(folderPath) {
+    const folder = this.data.folders.find(f => f.path === path.resolve(folderPath));
+    return folder?.excludes || [];
   }
 
   removeFolder(folderPath) {

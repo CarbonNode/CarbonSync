@@ -169,6 +169,31 @@ function setupIPC() {
   ipcMain.handle('window-minimize', () => mainWindow?.minimize());
   ipcMain.handle('window-close', () => mainWindow?.hide());
 
+  ipcMain.handle('rename-peer', (_, hostname, friendlyName) => {
+    if (!server?.config?.data) return;
+    if (!server.config.data.peers) server.config.data.peers = {};
+    server.config.data.peers[hostname] = friendlyName;
+    server.config.save();
+    return server.getStatus();
+  });
+
+  ipcMain.handle('set-folder-excludes', (_, folderName, excludes) => {
+    const folder = server?.config?.folders.find(f => f.name === folderName);
+    if (folder) {
+      server.config.setFolderExcludes(folder.path, excludes);
+      // Reload ignore patterns in scanner
+      if (server.engine?.folders.has(folderName)) {
+        server.engine.folders.get(folderName).scanner.reloadIgnore();
+      }
+    }
+    return server?.getStatus();
+  });
+
+  ipcMain.handle('get-folder-excludes', (_, folderName) => {
+    const folder = server?.config?.folders.find(f => f.name === folderName);
+    return folder?.excludes || [];
+  });
+
   ipcMain.handle('add-peer', async (_, rawIp, port) => {
     if (!rawIp) return { error: 'IP required' };
     // Handle ip:port format in the IP field
@@ -257,6 +282,9 @@ app.on('ready', async () => {
   });
   server.on('progress', (p) => {
     sendToUI('sync-progress', p);
+  });
+  server.on('sync-progress-update', () => {
+    sendToUI('status-update', server.getStatus());
   });
 
   console.log('UI: creating window...');

@@ -283,3 +283,48 @@ body {
 .toast.error { border-color: var(--red); }
 .toast.info { border-color: var(--accent); }
 @keyframes toastIn { from { opacity: 0; transform: translateX(20px); } to { opacity: 1; transform: translateX(0); } }
+
+/* ---- Device sync icons on folder cards ---- */
+.device-row { display: flex; gap: 12px; margin-top: 6px; flex-wrap: wrap; }
+.device-icon { font-size: 11px; color: var(--text-dim); cursor: default; }
+.exclude-badge { font-size: 10px; padding: 1px 6px; border-radius: 3px; background: #2a1a1a; color: #f59e0b; }
+.device-hostname { color: #444; font-size: 11px; font-weight: 400; }
+
+/* ---- Popup overlay ---- */
+.popup-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.7); z-index: 500;
+  display: flex; align-items: center; justify-content: center;
+  backdrop-filter: blur(4px);
+}
+.popup-overlay.hidden { display: none; }
+.popup-box {
+  background: var(--surface); border: 1px solid var(--border); border-radius: 10px;
+  width: 500px; max-height: 80vh; overflow-y: auto;
+}
+.popup-header {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 14px 16px; border-bottom: 1px solid var(--border);
+}
+.popup-header h3 { font-size: 14px; color: var(--accent); }
+.popup-body { padding: 16px; }
+.popup-body h4 { font-size: 12px; color: var(--text); margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.5px; }
+.popup-hint { font-size: 11px; color: #555; margin-bottom: 10px; }
+
+.exclude-item {
+  display: flex; justify-content: space-between; align-items: center;
+  padding: 6px 10px; background: var(--bg); border-radius: 4px; margin-bottom: 4px;
+  font-family: 'Consolas', monospace; font-size: 12px;
+}
+.exclude-add { display: flex; gap: 6px; margin-top: 10px; }
+.exclude-add input {
+  flex: 1; background: var(--bg); border: 1px solid var(--border); border-radius: 5px;
+  padding: 7px 10px; color: var(--text); font-size: 13px; font-family: 'Consolas', monospace; outline: none;
+}
+.exclude-add input:focus { border-color: var(--accent); }
+
+.popup-examples { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
+.example {
+  font-size: 11px; padding: 2px 8px; background: var(--bg); border: 1px solid var(--border);
+  border-radius: 3px; color: var(--text-dim); cursor: pointer; font-family: 'Consolas', monospace;
+}
+.example:hover { border-color: var(--accent); color: var(--text); }

@@ -16,7 +16,7 @@ const { ensureFirewallRule } = require('./firewall');
 const { ensureCerts } = require('./tls-certs');
 const { MSG, SYNC_STATE } = require('../shared/protocol');
 
-const INDEX_PAGE_SIZE = 5000; // Send index in pages of 5000 files
+const INDEX_PAGE_SIZE = 5000;
 
 class CarbonSyncServer extends EventEmitter {
   constructor(configDir) {
@@ -27,6 +27,7 @@ class CarbonSyncServer extends EventEmitter {
     this.transport = null;
     this.discovery = null;
     this._scanInterval = null;
+    this.deviceSync = new Map(); // deviceName -> { folder -> { status, progress, lastSync } }
   }
 
   async start() {
@@ -75,6 +76,15 @@ class CarbonSyncServer extends EventEmitter {
     this.transport.on('client-connected', (c) => {
       console.log(`Client connected: ${c.deviceName}`);
       this.emit('client-connected', { deviceName: c.deviceName, deviceId: c.deviceId });
+
+      // Send available folders to the new client
+      const folderList = this.config.folders.filter(f => f.enabled).map(f => ({
+        name: f.name,
+        path: f.path,
+        excludes: f.excludes || [],
+        fileCount: this.engine?.folders.get(f.name)?.scanner.getFileCount() || 0,
+      }));
+      writeFrame(c.socket, { type: 'folder_list', folders: folderList });
     });
     this.transport.on('client-disconnected', (c) => {
       console.log(`Client disconnected: ${c.deviceName || 'unknown'}`);
@@ -120,6 +130,34 @@ class CarbonSyncServer extends EventEmitter {
           break;
         case MSG.FILE_DONE:
           console.log(`Client ${client.deviceName} synced: ${msg.folder}/${msg.path}`);
+          // Track per-device sync progress
+          if (client.deviceName) {
+            if (!this.deviceSync.has(client.deviceName)) this.deviceSync.set(client.deviceName, {});
+            const ds = this.deviceSync.get(client.deviceName);
+            if (!ds[msg.folder]) ds[msg.folder] = { status: 'syncing', filesComplete: 0, filesTotal: 0, lastSync: null };
+            ds[msg.folder].filesComplete = (ds[msg.folder].filesComplete || 0) + 1;
+            ds[msg.folder].lastFile = msg.path;
+            this.emit('sync-progress-update');
+          }
+          break;
+
+        case 'sync_complete':
+          if (client.deviceName) {
+            if (!this.deviceSync.has(client.deviceName)) this.deviceSync.set(client.deviceName, {});
+            const ds = this.deviceSync.get(client.deviceName);
+            ds[msg.folder] = { status: 'synced', filesComplete: msg.filesComplete || 0, filesTotal: msg.filesTotal || 0, lastSync: Date.now() };
+            this.emit('sync-progress-update');
+          }
+          break;
+
+        case 'set_excludes':
+          if (msg.folder && Array.isArray(msg.excludes)) {
+            const folder = this.config.folders.find(f => f.name === msg.folder);
+            if (folder) {
+              this.config.setFolderExcludes(folder.path, msg.excludes);
+              writeFrame(client.socket, { type: 'excludes_updated', folder: msg.folder, excludes: msg.excludes, _requestId: msg._requestId });
+            }
+          }
           break;
         case MSG.PING:
           writeFrame(client.socket, { type: MSG.PONG, _requestId: msg._requestId });
@@ -258,9 +296,33 @@ class CarbonSyncServer extends EventEmitter {
     const folders = [];
     if (this.engine) {
       for (const name of this.engine.getFolderNames()) {
-        folders.push(this.engine.getFolderInfo(name));
+        const info = this.engine.getFolderInfo(name);
+        const cfgFolder = this.config.folders.find(f => f.name === name);
+        info.excludes = cfgFolder?.excludes || [];
+
+        // Add per-device sync status for this folder
+        info.devices = {};
+        info.devices[this.config.deviceName] = { status: 'source', progress: 100 };
+        for (const [deviceName, folderSync] of this.deviceSync) {
+          if (folderSync[name]) {
+            const ds = folderSync[name];
+            info.devices[deviceName] = {
+              status: ds.status,
+              progress: ds.filesTotal > 0 ? Math.round((ds.filesComplete / ds.filesTotal) * 100) : 0,
+              filesComplete: ds.filesComplete,
+              filesTotal: ds.filesTotal,
+              lastSync: ds.lastSync,
+              lastFile: ds.lastFile,
+            };
+          }
+        }
+        folders.push(info);
       }
     }
+
+    // Get peer names from config
+    const peers = this.config.data.peers || {};
+
     return {
       deviceName: this.config.deviceName,
       deviceId: this.config.deviceId,
@@ -270,7 +332,11 @@ class CarbonSyncServer extends EventEmitter {
       tlsEnabled: !!this.transport?.tlsKey,
       connectedClients: this.transport?.getClientCount() || 0,
       folders,
-      discoveredDevices: this.discovery?.getServices() || [],
+      discoveredDevices: (this.discovery?.getServices() || []).map(d => ({
+        ...d,
+        friendlyName: peers[d.hostname] || d.hostname,
+      })),
+      peers,
     };
   }
 
