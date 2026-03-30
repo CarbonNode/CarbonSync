@@ -49,7 +49,9 @@ async function refresh() {
     ? '<span class="tls-badge on">TLS</span>' : '<span class="tls-badge off">TCP</span>';
 
   renderFolders(s.folders || []);
-  renderDevices(s.discoveredDevices || []);
+  // Merge all device sources: discovered (mDNS), connected peers, saved peers
+  const allDevices = mergeDeviceLists(s);
+  renderDevices(allDevices, s);
   renderSettings(s);
 }
 
@@ -256,7 +258,38 @@ function renderActivity() {
 }
 
 // ---- Devices ----
-function renderDevices(devices) {
+
+function mergeDeviceLists(s) {
+  const byIp = new Map();
+
+  // Add discovered devices (mDNS)
+  for (const d of (s.discoveredDevices || [])) {
+    if (d.ip) byIp.set(d.ip, { ...d, source: 'discovered' });
+  }
+
+  // Add connected peers (active connections) — override discovered
+  for (const p of (s.connectedPeers || [])) {
+    const existing = byIp.get(p.ip) || {};
+    byIp.set(p.ip, { ...existing, ...p, source: 'connected' });
+  }
+
+  // Add saved peers (auto-reconnect list) — don't override connected
+  for (const p of (s.savedPeers || [])) {
+    if (!byIp.has(p.ip)) {
+      byIp.set(p.ip, {
+        ip: p.ip,
+        port: p.port,
+        hostname: p.deviceName || p.ip,
+        friendlyName: p.deviceName || p.ip,
+        source: 'saved',
+      });
+    }
+  }
+
+  return Array.from(byIp.values());
+}
+
+function renderDevices(devices, status) {
   // Filter out self
   const myId = currentStatus.deviceId || '';
   const myName = currentStatus.deviceName || '';
@@ -266,20 +299,11 @@ function renderDevices(devices) {
     return true;
   });
 
-  // Build set of connected peer IPs for quick lookup
-  const connectedIPs = new Set();
-  for (const p of (currentStatus.connectedPeers || [])) {
-    if (p.ip) connectedIPs.add(p.ip);
-  }
-  for (const p of (currentStatus.savedPeers || [])) {
-    if (p.ip) connectedIPs.add(p.ip);
-  }
-
   const el = document.getElementById('devices-list');
 
-  // Split into connected and discovered-only
-  const connected = devices.filter(d => connectedIPs.has(d.ip));
-  const discovered = devices.filter(d => !connectedIPs.has(d.ip));
+  // Split by source: connected/saved vs discovered-only
+  const connected = devices.filter(d => d.source === 'connected' || d.source === 'saved');
+  const discovered = devices.filter(d => d.source === 'discovered');
 
   let html = '';
 
