@@ -426,12 +426,21 @@ function setupIPC() {
     for (const [key, info] of server.peerConnections || new Map()) {
       peers.push({ address: key, deviceName: info.deviceName, connected: info.connected, authenticated: info.client?.authenticated || false });
     }
+    // Read last 20 lines of sync.log
+    let recentLog = '';
+    try {
+      const logPath = require('path').join(server.configDir, 'sync.log');
+      const content = require('fs').readFileSync(logPath, 'utf-8');
+      const lines = content.trim().split('\n');
+      recentLog = lines.slice(-20).join('\n');
+    } catch {}
     return {
       peerConnections: peers,
       inboundClients: server.transport?.getConnectedClients() || [],
       hubConnected: server.hubConnection?.authenticated || false,
       pushQueues: Object.fromEntries([...(server._pushQueues || new Map())].map(([k, v]) => [k, v.size])),
       watchedFolders: server.engine?.getFolderNames() || [],
+      recentLog,
     };
   });
 

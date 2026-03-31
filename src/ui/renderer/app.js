@@ -653,6 +653,7 @@ function setupSettings() {
       d.inboundClients.forEach(c => text += `  ${c.ip} — ${c.deviceName}\n`);
       text += `\nHub connected: ${d.hubConnected}`;
       text += `\nPush queues: ${JSON.stringify(d.pushQueues)}`;
+      if (d.recentLog) text += `\n\n--- Sync Log ---\n${d.recentLog}`;
       out.textContent = text;
     } catch (err) { out.textContent = 'Error: ' + err.message; }
   });

@@ -95,7 +95,10 @@ class CarbonSyncDevice extends EventEmitter {
       if (filtered.length === 0) return;
 
       const peerCount = [...(this.peerConnections || new Map())].filter(([,p]) => p.connected && p.client?.authenticated).length;
-      console.log(`Changes in ${folder}: ${filtered.length} file(s) [direction: ${direction}] peers: ${peerCount}`);
+      const logMsg = `[${new Date().toISOString()}] Changes: ${folder} → ${filtered.length} file(s) [dir=${direction}] peers=${peerCount} config=${folderConfig ? 'found' : 'MISSING'}`;
+      console.log(logMsg);
+      // Write to log file for debugging
+      try { require('fs').appendFileSync(require('path').join(this.configDir, 'sync.log'), logMsg + '\n'); } catch {}
 
       // Push to hub if direction is push or both
       if ((direction === 'push' || direction === 'both') && this.hubConnection?.authenticated) {
@@ -945,7 +948,9 @@ class CarbonSyncDevice extends EventEmitter {
       const folder = this.config.folders.find(f => f.name === folderName);
       if (!folder) return;
 
-      console.log(`Pushing ${items.length} changes to peer ${peerInfo.deviceName} for ${folderName}`);
+      const pushLog = `[${new Date().toISOString()}] PUSH: ${items.length} files to ${peerInfo.deviceName} for ${folderName}`;
+      console.log(pushLog);
+      try { require('fs').appendFileSync(require('path').join(require('os').homedir(), '.carbonsync', 'sync.log'), pushLog + '\n'); } catch {}
       for (const change of items) {
         try {
           if (change.type === 'delete') {
