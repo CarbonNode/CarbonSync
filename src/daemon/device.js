@@ -28,7 +28,7 @@ const { MSG, SYNC_STATE } = require('../shared/protocol');
 const { GameSaveManager } = require('./game-save-manager');
 
 const MAX_CONCURRENT_PUSHES = 4;
-const PUSH_DEBOUNCE_MS = 2000;
+const PUSH_DEBOUNCE_MS = 500;
 const RECENTLY_WRITTEN_TTL = 5000; // Ignore watcher events for files we just wrote
 
 class CarbonSyncDevice extends EventEmitter {

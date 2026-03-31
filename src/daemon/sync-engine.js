@@ -174,7 +174,7 @@ class SyncEngine extends EventEmitter {
       const batch = folder._pendingEvents;
       folder._pendingEvents = [];
       this._processWatchBatch(folderName, folder, batch);
-    }, 500);
+    }, 200);
   }
 
   async _processWatchBatch(folderName, folder, events) {
