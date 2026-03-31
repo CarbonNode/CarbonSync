@@ -162,20 +162,27 @@ class CarbonSyncDevice extends EventEmitter {
         this.emit('client-connected', { deviceName: c.deviceName, deviceId: c.deviceId, ip: remoteIp, auto: true });
         this._sendFolderList(c);
 
-        // Auto-connect back to this peer if we don't already have an outbound connection
-        if (remoteIp && !this.peerConnections.has(`${remoteIp}:${this.config.port}`)) {
-          console.log(`Auto-connecting back to ${c.deviceName} (${remoteIp})`);
-          this.connectToPeer(remoteIp, this.config.port).then(result => {
-            if (result.success) {
-              console.log(`Bi-directional connection established with ${c.deviceName}`);
-              // Save as peer for future reconnects
-              if (!this.config.data.savedPeers) this.config.data.savedPeers = [];
-              if (!this.config.data.savedPeers.some(p => p.ip === remoteIp)) {
-                this.config.data.savedPeers.push({ ip: remoteIp, port: this.config.port, deviceName: c.deviceName });
-                this.config.save();
+        // Auto-connect back after a short delay (avoid blocking the inbound handler)
+        const peerKey = `${remoteIp}:${this.config.port}`;
+        const alreadyConnected = this.peerConnections.has(peerKey) && this.peerConnections.get(peerKey).connected;
+        if (remoteIp && !alreadyConnected) {
+          setTimeout(() => {
+            console.log(`Auto-connecting back to ${c.deviceName} (${remoteIp})...`);
+            this.connectToPeer(remoteIp, this.config.port).then(result => {
+              if (result.success) {
+                console.log(`Bi-directional connection with ${c.deviceName} established`);
+                if (!this.config.data.savedPeers) this.config.data.savedPeers = [];
+                if (!this.config.data.savedPeers.some(p => p.ip === remoteIp)) {
+                  this.config.data.savedPeers.push({ ip: remoteIp, port: this.config.port, deviceName: c.deviceName });
+                  this.config.save();
+                }
+              } else {
+                console.log(`Auto-connect back to ${c.deviceName} failed: ${result.message || 'unknown'}`);
               }
-            }
-          }).catch(() => {});
+            }).catch(err => {
+              console.log(`Auto-connect back error: ${err.message}`);
+            });
+          }, 3000); // Wait 3s for inbound to fully settle
         }
       } else {
         // New peer — emit sync request for UI to show approval popup
