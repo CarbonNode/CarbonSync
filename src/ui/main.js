@@ -421,6 +421,35 @@ function setupIPC() {
     return server?.gameSaveManager?.backup?.cleanBackups() || { removed: 0 };
   });
 
+  ipcMain.handle('sync-diag', () => {
+    const peers = [];
+    for (const [key, info] of server.peerConnections || new Map()) {
+      peers.push({ address: key, deviceName: info.deviceName, connected: info.connected, authenticated: info.client?.authenticated || false });
+    }
+    return {
+      peerConnections: peers,
+      inboundClients: server.transport?.getConnectedClients() || [],
+      hubConnected: server.hubConnection?.authenticated || false,
+      pushQueues: Object.fromEntries([...(server._pushQueues || new Map())].map(([k, v]) => [k, v.size])),
+      watchedFolders: server.engine?.getFolderNames() || [],
+    };
+  });
+
+  ipcMain.handle('force-push', async (_, folderName) => {
+    const folder = server.config.folders.find(f => f.name === folderName);
+    if (!folder) return { error: 'Folder not in config' };
+    let pushed = 0;
+    for (const [, peerInfo] of server.peerConnections || new Map()) {
+      if (peerInfo.connected && peerInfo.client?.authenticated) {
+        try {
+          await server._pushFullFolder(folder);
+          pushed++;
+        } catch (err) { return { error: err.message }; }
+      }
+    }
+    return { pushed, totalPeers: server.peerConnections?.size || 0 };
+  });
+
   ipcMain.handle('backup-all', () => {
     // Run in background — don't block UI
     if (!server?.gameSaveManager) return { success: 0, skipped: 0 };

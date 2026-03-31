@@ -641,6 +641,22 @@ function setupSettings() {
     toast('Settings saved', 'success');
   });
 
+  document.getElementById('btn-sync-diag').addEventListener('click', async () => {
+    const out = document.getElementById('diag-output');
+    out.textContent = 'Running...';
+    try {
+      const d = await api.syncDiag();
+      let text = `Watched folders: ${d.watchedFolders.join(', ')}\n\n`;
+      text += `Peer connections (outbound): ${d.peerConnections.length}\n`;
+      d.peerConnections.forEach(p => text += `  ${p.address} — ${p.deviceName} — connected:${p.connected} auth:${p.authenticated}\n`);
+      text += `\nInbound clients: ${d.inboundClients.length}\n`;
+      d.inboundClients.forEach(c => text += `  ${c.ip} — ${c.deviceName}\n`);
+      text += `\nHub connected: ${d.hubConnected}`;
+      text += `\nPush queues: ${JSON.stringify(d.pushQueues)}`;
+      out.textContent = text;
+    } catch (err) { out.textContent = 'Error: ' + err.message; }
+  });
+
   document.getElementById('btn-check-update').addEventListener('click', async () => {
     const btn = document.getElementById('btn-check-update');
     const status = document.getElementById('update-status');
