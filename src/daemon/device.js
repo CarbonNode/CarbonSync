@@ -161,6 +161,22 @@ class CarbonSyncDevice extends EventEmitter {
         // Auto-approve LAN and known peers
         this.emit('client-connected', { deviceName: c.deviceName, deviceId: c.deviceId, ip: remoteIp, auto: true });
         this._sendFolderList(c);
+
+        // Auto-connect back to this peer if we don't already have an outbound connection
+        if (remoteIp && !this.peerConnections.has(`${remoteIp}:${this.config.port}`)) {
+          console.log(`Auto-connecting back to ${c.deviceName} (${remoteIp})`);
+          this.connectToPeer(remoteIp, this.config.port).then(result => {
+            if (result.success) {
+              console.log(`Bi-directional connection established with ${c.deviceName}`);
+              // Save as peer for future reconnects
+              if (!this.config.data.savedPeers) this.config.data.savedPeers = [];
+              if (!this.config.data.savedPeers.some(p => p.ip === remoteIp)) {
+                this.config.data.savedPeers.push({ ip: remoteIp, port: this.config.port, deviceName: c.deviceName });
+                this.config.save();
+              }
+            }
+          }).catch(() => {});
+        }
       } else {
         // New peer — emit sync request for UI to show approval popup
         console.log(`New peer requesting sync: ${c.deviceName} (${remoteIp})`);
