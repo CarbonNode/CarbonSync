@@ -486,27 +486,110 @@ class CarbonSyncDevice extends EventEmitter {
   }
 
   /**
-   * Sync all folders with a connected peer based on direction.
+   * Full bidirectional sync with a connected peer.
+   * Pulls what we're missing, pushes what they're missing.
    */
   async _syncWithPeer(peerInfo) {
     if (!peerInfo.connected) return;
 
     for (const folder of this.config.folders) {
-      if (!folder.enabled) continue;
+      if (!folder.enabled || folder.internal) continue;
+      const dir = folder.direction || 'both';
+
       try {
-        switch (folder.direction) {
-          case 'receive':
-          case 'both':
-            await this._pullFolderFromPeer(peerInfo, folder);
-            peerInfo.client.send({ type: MSG.SUBSCRIBE, folder: folder.name });
-            break;
+        // Pull from peer (receive or both)
+        if (dir === 'receive' || dir === 'both') {
+          console.log(`Pulling ${folder.name} from ${peerInfo.deviceName}...`);
+          await this._pullFolderFromPeer(peerInfo, folder);
+          peerInfo.client.send({ type: MSG.SUBSCRIBE, folder: folder.name });
         }
-        // Push is handled by the watcher — when files change locally,
-        // they get pushed to ALL connected peers
+
+        // Push to peer (push or both) — send our files that peer doesn't have
+        if (dir === 'push' || dir === 'both') {
+          console.log(`Pushing ${folder.name} to ${peerInfo.deviceName}...`);
+          await this._pushFullFolderToPeer(peerInfo, folder);
+        }
       } catch (err) {
         console.error(`Peer sync failed [${folder.name}]: ${err.message}`);
       }
     }
+  }
+
+  /**
+   * Push all files the peer is missing for a folder.
+   */
+  async _pushFullFolderToPeer(peerInfo, folder) {
+    if (!peerInfo.client?.authenticated) return;
+    const engineFolder = this._findEngineFolder(folder.name);
+    if (!engineFolder) return;
+
+    const localIndex = engineFolder.scanner.getIndex();
+
+    // Send our index, get back what they need
+    let response;
+    try {
+      response = await peerInfo.client.request({
+        type: MSG.PUSH_INDEX,
+        folder: folder.name,
+        index: localIndex.map(f => ({ path: f.path, hash: f.hash, size: f.size, mtime_ms: f.mtime_ms })),
+      }, 60000);
+    } catch (err) {
+      console.error(`Push index to ${peerInfo.deviceName} failed: ${err.message}`);
+      return;
+    }
+
+    if (response.type === MSG.ERROR) {
+      console.error(`Push index error: ${response.message}`);
+      return;
+    }
+
+    const needed = response.needed || [];
+    if (needed.length === 0) {
+      console.log(`${folder.name}: peer ${peerInfo.deviceName} is up to date`);
+      return;
+    }
+
+    console.log(`${folder.name}: pushing ${needed.length} files to ${peerInfo.deviceName}`);
+    const logMsg = `[${new Date().toISOString()}] FULL PUSH: ${needed.length} files for ${folder.name} to ${peerInfo.deviceName}`;
+    try { fs.appendFileSync(path.join(this.configDir, 'sync.log'), logMsg + '\n'); } catch {}
+
+    for (const relPath of needed) {
+      try {
+        const absPath = path.join(engineFolder.path, relPath);
+        let stat;
+        try { stat = await fsp.stat(absPath); } catch { continue; }
+        if (!stat.isFile()) continue;
+
+        const data = await fsp.readFile(absPath);
+        const hash = crypto.createHash('sha256').update(data).digest('hex');
+
+        const resp = await peerInfo.client.request({
+          type: MSG.FILE_PUSH,
+          folder: folder.name,
+          path: relPath,
+          size: data.length,
+          hash,
+          mtime_ms: Math.floor(stat.mtimeMs),
+        }, 30000);
+
+        if (resp.status === 'skip') continue;
+
+        const header = Buffer.alloc(5);
+        header.writeUInt32BE(data.length + 1);
+        header[4] = 0xFF;
+        peerInfo.client.socket.write(Buffer.concat([header, data]));
+        writeFrame(peerInfo.client.socket, {
+          type: 'transfer_end', folder: folder.name, path: relPath, bytesSent: data.length,
+        });
+
+        // Small delay between files to avoid overwhelming
+        await new Promise(r => setTimeout(r, 50));
+      } catch (err) {
+        console.error(`Push file failed [${relPath}]: ${err.message}`);
+      }
+    }
+
+    console.log(`${folder.name}: push to ${peerInfo.deviceName} complete`);
   }
 
   /**
