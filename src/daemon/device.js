@@ -68,7 +68,10 @@ class CarbonSyncDevice extends EventEmitter {
     this.engine.on('scan-progress', (p) => this.emit('progress', p));
 
     this.engine.on('changes', ({ folder, changes }) => {
-      const folderConfig = this.config.folders.find(f => f.name === folder);
+      // Match by engine name OR by path (engine name may have hash suffix)
+      const engineFolder = this.engine?.folders.get(folder);
+      const folderConfig = this.config.folders.find(f => f.name === folder) ||
+                           (engineFolder && this.config.folders.find(f => f.path === engineFolder.path));
       const direction = folderConfig?.direction || 'both';
 
       // Game Saves folder is managed by GameSaveManager — don't flood the activity feed
@@ -91,7 +94,8 @@ class CarbonSyncDevice extends EventEmitter {
 
       if (filtered.length === 0) return;
 
-      console.log(`Changes in ${folder}: ${filtered.length} file(s) [direction: ${direction}]`);
+      const peerCount = [...(this.peerConnections || new Map())].filter(([,p]) => p.connected && p.client?.authenticated).length;
+      console.log(`Changes in ${folder}: ${filtered.length} file(s) [direction: ${direction}] peers: ${peerCount}`);
 
       // Push to hub if direction is push or both
       if ((direction === 'push' || direction === 'both') && this.hubConnection?.authenticated) {
@@ -99,10 +103,11 @@ class CarbonSyncDevice extends EventEmitter {
       }
 
       // Push to all connected peers too
+      const pushFolderName = folderConfig?.name || folder;
       if (direction === 'push' || direction === 'both') {
         for (const [, peerInfo] of this.peerConnections) {
           if (peerInfo.connected && peerInfo.client?.authenticated) {
-            this._queuePushToPeer(peerInfo, folder, filtered);
+            this._queuePushToPeer(peerInfo, pushFolderName, filtered);
           }
         }
       }
