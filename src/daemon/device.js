@@ -1039,9 +1039,23 @@ class CarbonSyncDevice extends EventEmitter {
 
   // ---- Push reception (hub receiving files from devices) ----
 
+  _findEngineFolder(name) {
+    // Direct match
+    if (this.engine?.folders.has(name)) return this.engine.folders.get(name);
+    // Match by config name → path → engine
+    const cfgFolder = this.config.folders.find(f => f.name === name);
+    if (cfgFolder) {
+      for (const [, ef] of this.engine?.folders || new Map()) {
+        if (ef.path === cfgFolder.path) return ef;
+      }
+    }
+    return null;
+  }
+
   _handleFilePushStart(client, msg) {
-    const folder = this.engine?.folders.get(msg.folder);
+    const folder = this._findEngineFolder(msg.folder);
     if (!folder) {
+      console.log(`FILE_PUSH rejected: unknown folder '${msg.folder}' (engine has: ${[...(this.engine?.getFolderNames() || [])].join(', ')})`);
       writeFrame(client.socket, { type: MSG.ERROR, message: 'Unknown folder', _requestId: msg._requestId });
       return;
     }
@@ -1079,7 +1093,7 @@ class CarbonSyncDevice extends EventEmitter {
     if (!pending) return;
     client._pushPending = null;
 
-    const folder = this.engine?.folders.get(pending.folder);
+    const folder = this._findEngineFolder(pending.folder);
     if (!folder) return;
 
     const fileData = Buffer.concat(pending.chunks);
@@ -1143,7 +1157,7 @@ class CarbonSyncDevice extends EventEmitter {
   }
 
   async _handleFileDeletePush(client, msg) {
-    const folder = this.engine?.folders.get(msg.folder);
+    const folder = this._findEngineFolder(msg.folder);
     if (!folder) return;
 
     const absPath = path.join(folder.path, msg.path);
@@ -1164,7 +1178,7 @@ class CarbonSyncDevice extends EventEmitter {
   }
 
   _handlePushIndex(client, msg) {
-    const folder = this.engine?.folders.get(msg.folder);
+    const folder = this._findEngineFolder(msg.folder);
     if (!folder) {
       writeFrame(client.socket, { type: MSG.ERROR, message: 'Unknown folder', _requestId: msg._requestId });
       return;
@@ -1205,7 +1219,7 @@ class CarbonSyncDevice extends EventEmitter {
   // ---- Existing handlers (from server.js) ----
 
   _handleIndexRequest(client, msg) {
-    const folder = this.engine?.folders.get(msg.folder);
+    const folder = this._findEngineFolder(msg.folder);
     if (!folder) {
       writeFrame(client.socket, { type: MSG.ERROR, message: 'Unknown folder', _requestId: msg._requestId });
       return;
@@ -1236,7 +1250,7 @@ class CarbonSyncDevice extends EventEmitter {
   }
 
   async _handleBlockRequest(client, msg) {
-    const folder = this.engine?.folders.get(msg.folder);
+    const folder = this._findEngineFolder(msg.folder);
     if (!folder) {
       writeFrame(client.socket, { type: MSG.ERROR, message: 'Unknown folder', _requestId: msg._requestId });
       return;
