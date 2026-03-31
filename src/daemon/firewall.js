@@ -40,10 +40,12 @@ async function ensureFirewallRule(port) {
   console.log('Adding firewall rules...');
   try {
     const udpDiscoveryPort = (port || DEFAULT_PORT) + 1;
+    const httpApiPort = (port || DEFAULT_PORT) + 2;
     const cmds = [
       `netsh advfirewall firewall add rule name=${RULE_NAME} dir=in action=allow protocol=TCP localport=${port || DEFAULT_PORT} profile=private,domain`,
       `netsh advfirewall firewall add rule name="${RULE_NAME} mDNS" dir=in action=allow protocol=UDP localport=5353 profile=private,domain`,
       `netsh advfirewall firewall add rule name="${RULE_NAME} Discovery" dir=in action=allow protocol=UDP localport=${udpDiscoveryPort} profile=private,domain`,
+      `netsh advfirewall firewall add rule name="${RULE_NAME} API" dir=in action=allow protocol=TCP localport=${httpApiPort} profile=private,domain`,
     ].join(' & ');
     await runElevated(cmds);
     console.log('Firewall rules added');

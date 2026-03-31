@@ -146,11 +146,14 @@ class CarbonSyncDevice extends EventEmitter {
       const savedPeers = this.config.data.savedPeers || [];
       const approvedPeers = this.config.data.approvedPeers || [];
       const remoteIp = c.socket.remoteAddress?.replace('::ffff:', '') || '';
-      const isKnown = savedPeers.some(p => p.ip === remoteIp) ||
-                       approvedPeers.some(p => p.deviceId === c.deviceId || p.deviceName === c.deviceName);
+      const isLan = remoteIp.startsWith('192.168.') || remoteIp.startsWith('10.') || remoteIp === '127.0.0.1';
+      const isKnown = isLan ||
+                       savedPeers.some(p => p.ip === remoteIp || p.deviceName === c.deviceName) ||
+                       approvedPeers.some(p => p.ip === remoteIp || p.deviceId === c.deviceId || p.deviceName === c.deviceName);
+      console.log(`Peer: ${c.deviceName} (${remoteIp}) — ${isKnown ? 'auto-approved' : 'needs approval'}`);
 
       if (isKnown) {
-        // Auto-approve known peers
+        // Auto-approve LAN and known peers
         this.emit('client-connected', { deviceName: c.deviceName, deviceId: c.deviceId, ip: remoteIp, auto: true });
         this._sendFolderList(c);
       } else {
@@ -242,8 +245,43 @@ class CarbonSyncDevice extends EventEmitter {
       }
     }
 
+    // 8. HTTP Status API (for Carbon Vision and other integrations)
+    this._startHttpApi();
+
     console.log('=== CarbonSync Ready ===');
     this.emit('ready');
+  }
+
+  _startHttpApi() {
+    const http = require('http');
+    const httpPort = this.config.port + 2; // 21549 by default
+
+    this._httpServer = http.createServer((req, res) => {
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      res.setHeader('Content-Type', 'application/json');
+
+      if (req.url === '/health') {
+        res.end(JSON.stringify({ ok: true, version: require('../../package.json').version }));
+      } else if (req.url === '/status') {
+        try {
+          res.end(JSON.stringify(this.getStatus()));
+        } catch (err) {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      } else {
+        res.statusCode = 404;
+        res.end(JSON.stringify({ error: 'Not found. Use /status or /health' }));
+      }
+    });
+
+    this._httpServer.on('error', (err) => {
+      console.warn(`HTTP API failed to start on port ${httpPort}: ${err.message}`);
+    });
+
+    this._httpServer.listen(httpPort, '0.0.0.0', () => {
+      console.log(`HTTP API listening on port ${httpPort}`);
+    });
   }
 
   // ---- Hub Connection (device → hub) ----
@@ -1400,6 +1438,7 @@ class CarbonSyncDevice extends EventEmitter {
     if (this._scanInterval) { clearInterval(this._scanInterval); this._scanInterval = null; }
     for (const [, timer] of this._pushTimers) clearTimeout(timer);
     this._pushTimers.clear();
+    if (this._httpServer) { this._httpServer.close(); this._httpServer = null; }
     if (this.gameSaveManager) await this.gameSaveManager.stop();
     if (this.hubConnection) this.hubConnection.disconnect();
     for (const [, peer] of this.peerConnections) {
