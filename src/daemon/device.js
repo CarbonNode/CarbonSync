@@ -1298,9 +1298,16 @@ class CarbonSyncDevice extends EventEmitter {
 
     for (const [relPath, clientEntry] of clientMap) {
       const hubEntry = hubIndex.get(relPath);
-      if (!hubEntry || hubEntry.hash !== clientEntry.hash) {
-        // Skip fast hashes — they're not comparable
-        if (clientEntry.hash.startsWith('fast:')) continue;
+      if (!hubEntry) {
+        // Hub doesn't have this file at all — always request it
+        needed.push(relPath);
+      } else if (hubEntry.hash !== clientEntry.hash) {
+        // Both sides have the file but hashes differ.
+        // Skip if either side has a fast: hash — can't reliably compare
+        if (clientEntry.hash.startsWith('fast:') || hubEntry.hash.startsWith('fast:')) {
+          // Fall back to size comparison: if same size, assume same file
+          if (clientEntry.size === hubEntry.size) continue;
+        }
         needed.push(relPath);
       }
     }
