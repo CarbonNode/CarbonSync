@@ -1,33 +1,35 @@
 /**
  * CarbonSync Electron UI — System Tray + Settings Window
- * Manages the daemon and provides a configuration interface.
+ *
+ * The daemon runs in a SEPARATE PROCESS (daemon-process.js) so that
+ * heavy work (SQLite, hashing, network) never blocks the UI.
+ * All communication goes through DaemonProxy (IPC messages).
  */
 
-const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, dialog } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, dialog, shell } = require('electron');
 const path = require('path');
+const fs = require('fs');
 const os = require('os');
-const { CarbonSyncDevice } = require('../daemon/device');
-const { writeFrame } = require('../daemon/transport');
+const { DaemonProxy } = require('../daemon/daemon-proxy');
 const { getLatestRelease, downloadInstaller, installAndRestart } = require('../daemon/updater');
 
 app.name = 'CarbonSync';
 if (process.platform === 'win32') {
   app.setAppUserModelId('com.carbonsync.app');
 }
-
-// Set userData to avoid sharing with other Electron apps
 app.setPath('userData', path.join(app.getPath('appData'), 'CarbonSync'));
 
 const configDir = path.join(os.homedir(), '.carbonsync');
-// Icon: try extraResources (outside asar) first, fallback to asar path
 const iconPath = (() => {
   const extra = path.join(process.resourcesPath || '', 'icon.ico');
-  if (require('fs').existsSync(extra)) return extra;
+  if (fs.existsSync(extra)) return extra;
   return path.join(__dirname, '..', '..', 'assets', 'icon.ico');
 })();
+
 let tray = null;
 let mainWindow = null;
-let server = null;
+let server = null;       // DaemonProxy instance
+let cachedStatus = {};   // Last known status (for sync tray menu updates)
 
 function sendToUI(channel, data) {
   if (mainWindow && !mainWindow.isDestroyed()) {
@@ -37,30 +39,26 @@ function sendToUI(channel, data) {
 
 const gotLock = app.requestSingleInstanceLock();
 if (!gotLock) { app.quit(); }
+app.on('second-instance', () => { mainWindow?.show(); mainWindow?.focus(); });
 
-app.on('second-instance', () => {
-  if (mainWindow) { mainWindow.show(); mainWindow.focus(); }
-});
+// ---- Window & Tray ----
 
 function createTrayIcon() {
   try {
-    if (require('fs').existsSync(iconPath)) {
-      return nativeImage.createFromPath(iconPath);
-    }
+    if (fs.existsSync(iconPath)) return nativeImage.createFromPath(iconPath);
   } catch {}
-  // Fallback: generated green square
   const size = 16;
   const pixels = Buffer.alloc(size * size * 4);
   for (let i = 0; i < size * size; i++) {
     pixels[i * 4] = 0x22; pixels[i * 4 + 1] = 0xc5;
     pixels[i * 4 + 2] = 0x5e; pixels[i * 4 + 3] = 0xff;
   }
-  const img = nativeImage.createFromBuffer(pixels, { width: size, height: size });
-  return nativeImage.createFromBuffer(img.toPNG());
+  return nativeImage.createFromBuffer(
+    nativeImage.createFromBuffer(pixels, { width: size, height: size }).toPNG()
+  );
 }
 
 function createWindow() {
-  // Force window onto primary display (multi-monitor fix)
   const { screen } = require('electron');
   const primary = screen.getPrimaryDisplay();
 
@@ -77,623 +75,344 @@ function createWindow() {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
-      sandbox: false, // Required for drag-drop file.path access
+      sandbox: false,
     },
   });
 
-  const htmlPath = path.join(__dirname, 'renderer', 'index.html');
-  console.log('Loading HTML from:', htmlPath);
-  mainWindow.loadFile(htmlPath);
-
-  // Only show window after content is painted (no white flash)
+  mainWindow.loadFile(path.join(__dirname, 'renderer', 'index.html'));
   mainWindow.once('ready-to-show', () => {
-    if (!process.argv.includes('--hidden')) {
-      mainWindow.show();
-    }
+    if (!process.argv.includes('--hidden')) mainWindow.show();
   });
-
-  mainWindow.webContents.on('did-fail-load', (e, code, desc) => {
-    console.error('Page load failed:', code, desc);
-  });
-
-  mainWindow.webContents.on('console-message', (e, level, msg) => {
-    console.log('Renderer:', msg);
-  });
-
-  mainWindow.on('close', (e) => {
-    if (!app.isQuitting) { e.preventDefault(); mainWindow.hide(); }
-  });
-
-  if (process.argv.includes('--dev')) {
-    mainWindow.webContents.openDevTools({ mode: 'detach' });
-  }
+  mainWindow.webContents.on('did-fail-load', (e, code, desc) => console.error('Page load failed:', code, desc));
+  mainWindow.webContents.on('console-message', (e, level, msg) => console.log('Renderer:', msg));
+  mainWindow.on('close', (e) => { if (!app.isQuitting) { e.preventDefault(); mainWindow.hide(); } });
+  if (process.argv.includes('--dev')) mainWindow.webContents.openDevTools({ mode: 'detach' });
 }
 
 function updateTrayMenu() {
-  const status = server ? server.getStatus() : {};
-  const folderCount = status.folders?.length || 0;
-  const clientCount = status.connectedClients || 0;
-
-  const menu = Menu.buildFromTemplate([
+  if (!tray) return;
+  const folderCount = cachedStatus.folders?.length || 0;
+  const clientCount = cachedStatus.connectedClients || 0;
+  tray.setContextMenu(Menu.buildFromTemplate([
     { label: `CarbonSync — ${folderCount} folder(s), ${clientCount} client(s)`, enabled: false },
     { type: 'separator' },
     { label: 'Open Settings', click: () => { mainWindow?.show(); mainWindow?.focus(); } },
     { label: 'Add Folder...', click: () => addFolderDialog() },
     { type: 'separator' },
     { label: 'Quit', click: () => { app.isQuitting = true; app.quit(); } },
-  ]);
-  tray.setContextMenu(menu);
+  ]));
 }
 
 async function addFolderDialog() {
-  const result = await dialog.showOpenDialog({
-    properties: ['openDirectory'],
-    title: 'Select folder to sync',
-  });
-  if (result.canceled || result.filePaths.length === 0) return;
+  const result = await dialog.showOpenDialog({ properties: ['openDirectory'], title: 'Select folder to sync' });
+  if (result.canceled || !result.filePaths[0]) return;
   try {
-    await server.addFolder(result.filePaths[0]);
+    const status = await server.call('addFolder', result.filePaths[0]);
+    cachedStatus = status || cachedStatus;
     updateTrayMenu();
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('status-update', server.getStatus());
-    }
+    sendToUI('status-update', cachedStatus);
   } catch (err) {
     dialog.showErrorBox('Error', err.message);
   }
 }
 
+// Helper: call daemon and refresh status
+async function callAndRefresh(method, ...args) {
+  const result = await server.call(method, ...args);
+  // Most mutation calls return the new status
+  if (result && result.folders) cachedStatus = result;
+  sendToUI('status-update', cachedStatus);
+  return result;
+}
+
+// ---- IPC Handlers ----
+
 function setupIPC() {
-  ipcMain.handle('get-status', () => server?.getStatus() || {});
+  // Status & config
+  ipcMain.handle('get-status', async () => {
+    try { cachedStatus = await server.call('getStatus'); } catch {}
+    return cachedStatus;
+  });
+  ipcMain.handle('get-config', () => server.call('getConfig'));
 
+  // Folders
   ipcMain.handle('add-folder', async (_, folderPath, name, direction, folderId) => {
-    await server.addFolder(folderPath, name, direction, folderId);
+    const status = await server.call('addFolder', folderPath, name, direction, folderId);
+    cachedStatus = status || cachedStatus;
     updateTrayMenu();
-    const status = server.getStatus();
-    sendToUI('status-update', status);
-    return status;
+    sendToUI('status-update', cachedStatus);
+    return cachedStatus;
   });
-
-  ipcMain.handle('remove-folder', (_, folderPath) => {
-    server.removeFolder(folderPath);
+  ipcMain.handle('remove-folder', async (_, folderPath) => {
+    const status = await server.call('removeFolder', folderPath);
+    cachedStatus = status || cachedStatus;
     updateTrayMenu();
-    return server.getStatus();
+    return cachedStatus;
   });
-
-  ipcMain.handle('get-config', () => server?.config?.data || {});
-
-  ipcMain.handle('update-settings', (_, settings) => {
-    server.config.updateSettings(settings);
-    // Apply start-with-Windows immediately if changed
-    if (settings.startWithWindows !== undefined) {
-      app.setLoginItemSettings({ openAtLogin: settings.startWithWindows, args: ['--hidden'] });
-    }
-    return true;
+  ipcMain.handle('rescan', (_, folderName) => server.call('syncFolder', folderName));
+  ipcMain.handle('cancel-scan', (_, folderName) => server.call('cancelScan', folderName));
+  ipcMain.handle('rename-folder', async (_, folderPath, newName) => {
+    const status = await server.call('renameFolder', folderPath, newName);
+    cachedStatus = status || cachedStatus;
+    sendToUI('status-update', cachedStatus);
+    return cachedStatus;
   });
-
-  ipcMain.handle('pick-folder', async () => {
-    const result = await dialog.showOpenDialog({
-      properties: ['openDirectory'],
-      title: 'Select folder to sync',
-    });
-    if (result.canceled) return null;
-    return result.filePaths[0];
-  });
-
-  ipcMain.handle('rescan', async (_, folderName) => {
-    if (server?.syncFolder) return server.syncFolder(folderName);
-    if (server?.engine) return server.engine.rescan(folderName);
-  });
-
-  ipcMain.handle('cancel-scan', (_, folderName) => {
-    if (server?.engine?.folders.has(folderName)) {
-      server.engine.folders.get(folderName).scanner.cancelScan();
-      return true;
-    }
-    return false;
-  });
-
-  ipcMain.handle('window-minimize', () => mainWindow?.minimize());
-  ipcMain.handle('window-close', () => mainWindow?.hide());
-
-  ipcMain.handle('approve-peer', (_, clientId, selectedFolders) => {
-    server.approvePeer(clientId, selectedFolders);
-    sendToUI('status-update', server.getStatus());
-    return true;
-  });
-
-  ipcMain.handle('reject-peer', (_, clientId) => {
-    server.rejectPeer(clientId);
-    return true;
-  });
-
-  ipcMain.handle('set-hub-connection', (_, address, apiKey) => {
-    server.config.setHubConnection(address, apiKey);
-    server.reconnectHub();
-    return server.getStatus();
-  });
-
-  ipcMain.handle('rename-folder', (_, folderPath, newName) => {
-    server.config.renameFolder(folderPath, newName);
-    if (server.transport) {
-      server.transport.broadcast({ type: 'folder_renamed', path: folderPath, name: newName });
-    }
-    sendToUI('status-update', server.getStatus());
-    return server.getStatus();
-  });
-
   ipcMain.handle('set-folder-icon', async (_, folderPath) => {
     const result = await dialog.showOpenDialog({
-      properties: ['openFile'],
-      title: 'Choose folder icon',
+      properties: ['openFile'], title: 'Choose folder icon',
       filters: [{ name: 'Images', extensions: ['png', 'jpg', 'jpeg', 'ico', 'svg', 'webp'] }],
     });
     if (result.canceled || !result.filePaths[0]) return null;
 
     const src = result.filePaths[0];
-    const ext = require('path').extname(src);
-    const folder = server.config.folders.find(f => f.path === require('path').resolve(folderPath));
+    const ext = path.extname(src);
+    // Copy icon locally (main process handles file dialogs + copies)
+    const iconDir = path.join(configDir, 'folder-icons');
+    fs.mkdirSync(iconDir, { recursive: true });
+    // Use a temp name, daemon will find folder by path
+    const config = await server.call('getConfig');
+    const folder = config.folders?.find(f => f.path === path.resolve(folderPath));
     if (!folder) return null;
-
-    // Copy icon to config dir
-    const iconDir = require('path').join(server.configDir, 'folder-icons');
-    require('fs').mkdirSync(iconDir, { recursive: true });
     const destName = folder.name.replace(/[^a-zA-Z0-9]/g, '_') + ext;
-    const dest = require('path').join(iconDir, destName);
-    require('fs').copyFileSync(src, dest);
+    const dest = path.join(iconDir, destName);
+    fs.copyFileSync(src, dest);
+    const iconBase64 = fs.readFileSync(dest).toString('base64');
 
-    // Save path in config
-    folder.icon = dest;
-    server.config.save();
-
-    // Broadcast to peers
-    if (server.transport) {
-      const iconData = require('fs').readFileSync(dest).toString('base64');
-      server.transport.broadcast({ type: 'folder_icon', path: folderPath, name: folder.name, iconBase64: iconData, ext });
-    }
-
-    sendToUI('status-update', server.getStatus());
+    await server.call('setFolderIcon', folderPath, dest, iconBase64, ext);
+    cachedStatus = await server.call('getStatus');
+    sendToUI('status-update', cachedStatus);
     return dest;
   });
+  ipcMain.handle('set-folder-group', (_, folderPath, group) => callAndRefresh('setFolderGroup', folderPath, group));
+  ipcMain.handle('set-folder-direction', (_, folderName, direction) => callAndRefresh('setFolderDirection', folderName, direction));
+  ipcMain.handle('set-folder-excludes', (_, folderName, excludes) => callAndRefresh('setFolderExcludes', folderName, excludes));
+  ipcMain.handle('get-folder-excludes', (_, folderName) => server.call('getFolderExcludes', folderName));
 
-  ipcMain.handle('set-folder-group', (_, folderPath, group) => {
-    server.config.setFolderGroup(folderPath, group);
-    sendToUI('status-update', server.getStatus());
-    return server.getStatus();
-  });
-
-  ipcMain.handle('set-folder-direction', (_, folderName, direction) => {
-    const folder = server.config.folders.find(f => f.name === folderName);
-    if (folder) server.config.setFolderDirection(folder.path, direction);
-    return server.getStatus();
-  });
-
-  ipcMain.handle('set-device-name', (_, name) => {
-    if (name && server?.config) {
-      server.config.setDeviceName(name.trim());
-      return true;
+  // Settings
+  ipcMain.handle('update-settings', async (_, settings) => {
+    await server.call('updateSettings', settings);
+    if (settings.startWithWindows !== undefined) {
+      app.setLoginItemSettings({ openAtLogin: settings.startWithWindows, args: ['--hidden'] });
     }
-    return false;
+    return true;
   });
+  ipcMain.handle('set-device-name', (_, name) => server.call('setDeviceName', name));
 
-  ipcMain.handle('rename-peer', (_, hostname, friendlyName) => {
-    if (!server?.config?.data) return;
-    if (!server.config.data.peers) server.config.data.peers = {};
-    server.config.data.peers[hostname] = friendlyName;
-    server.config.save();
-
-    // Tell the peer to update its own device name
-    if (server.transport) {
-      for (const [, client] of server.transport.clients) {
-        if (client.authenticated && (client.deviceName === hostname || client.deviceId === hostname)) {
-          writeFrame(client.socket, { type: 'set_device_name', name: friendlyName });
-        }
-      }
-    }
-
-    return server.getStatus();
-  });
-
-  ipcMain.handle('set-folder-excludes', (_, folderName, excludes) => {
-    const folder = server?.config?.folders.find(f => f.name === folderName);
-    if (folder) {
-      server.config.setFolderExcludes(folder.path, excludes);
-      // Reload ignore patterns in scanner
-      if (server.engine?.folders.has(folderName)) {
-        server.engine.folders.get(folderName).scanner.reloadIgnore();
-      }
-    }
-    return server?.getStatus();
-  });
-
-  ipcMain.handle('get-folder-excludes', (_, folderName) => {
-    const folder = server?.config?.folders.find(f => f.name === folderName);
-    return folder?.excludes || [];
-  });
-
+  // Peers
   ipcMain.handle('add-peer', async (_, rawIp, port) => {
     if (!rawIp) return { error: 'IP required' };
-    // Handle ip:port format in the IP field
     let ip = rawIp.trim();
-    if (ip.includes(':')) {
-      const parts = ip.split(':');
-      ip = parts[0];
-      port = parseInt(parts[1]) || port;
-    }
+    if (ip.includes(':')) { const p = ip.split(':'); ip = p[0]; port = parseInt(p[1]) || port; }
     port = port || 21547;
 
-    // Prevent connecting to self
     if (ip === '127.0.0.1' || ip === 'localhost') return { error: 'Cannot connect to self' };
     const localIPs = [];
-    for (const ifaces of Object.values(require('os').networkInterfaces())) {
+    for (const ifaces of Object.values(os.networkInterfaces())) {
       for (const iface of ifaces) { if (iface.family === 'IPv4') localIPs.push(iface.address); }
     }
     if (localIPs.includes(ip)) return { error: 'Cannot connect to self' };
 
-    // Connect to peer and start syncing
-    const result = await server.connectToPeer(ip, port);
+    const result = await server.call('addPeer', ip, port);
     if (result.success) {
-      // Also add to discovered devices list for UI
-      const peer = { role: 'peer', ip, port, hostname: result.deviceName || ip, deviceId: '', name: result.deviceName || ip };
-      if (server?.discovery) {
-        server.discovery.services.set(ip, peer);
-      }
-      // Save peer address for auto-reconnect on restart
-      if (!server.config.data.savedPeers) server.config.data.savedPeers = [];
-      // Get friendly name if we've renamed this peer
-      const friendlyName = server.config.data.peers?.[result.deviceName] || result.deviceName || ip;
-
-      const existing = server.config.data.savedPeers.find(p => p.ip === ip && p.port === port);
-      if (existing) {
-        existing.deviceName = friendlyName;
-      } else {
-        server.config.data.savedPeers.push({ ip, port, deviceName: friendlyName });
-      }
-      server.config.save();
       sendToUI('activity', { type: 'connect', message: `Connected to ${result.deviceName || ip}:${port} — syncing folders`, time: Date.now() });
     }
-    sendToUI('status-update', server?.getStatus());
+    cachedStatus = await server.call('getStatus');
+    sendToUI('status-update', cachedStatus);
     return result;
   });
-
   ipcMain.handle('remove-peer', async (_, rawIp, port) => {
     let ip = rawIp?.trim();
     if (!ip) return;
-    if (ip.includes(':')) {
-      const parts = ip.split(':');
-      ip = parts[0];
-      port = parseInt(parts[1]) || port;
-    }
+    if (ip.includes(':')) { const p = ip.split(':'); ip = p[0]; port = parseInt(p[1]) || port; }
     port = port || 21547;
-    const key = `${ip}:${port}`;
-
-    // Disconnect
-    if (server.peerConnections?.has(key)) {
-      server.peerConnections.get(key).client?.disconnect();
-      server.peerConnections.delete(key);
-    }
-
-    // Remove from saved peers
-    if (server.config.data.savedPeers) {
-      server.config.data.savedPeers = server.config.data.savedPeers.filter(p => !(p.ip === ip && p.port === port));
-      server.config.save();
-    }
-
-    // Remove from discovered
-    if (server.discovery) {
-      server.discovery.services.delete(ip);
-    }
-
+    await server.call('removePeer', ip, port);
     sendToUI('activity', { type: 'disconnect', message: `Removed peer ${ip}:${port}`, time: Date.now() });
-    sendToUI('status-update', server?.getStatus());
+    cachedStatus = await server.call('getStatus');
+    sendToUI('status-update', cachedStatus);
     return { success: true };
   });
-
-  // ---- Game Save IPC ----
-
-  ipcMain.handle('get-game-library', () => server?.gameSaveManager?.getLibrary() || []);
-
-  ipcMain.handle('get-save-history', async (_, gameId) => {
-    return server?.gameSaveManager?.getHistory(gameId) || [];
+  ipcMain.handle('approve-peer', async (_, clientId, selectedFolders) => {
+    await server.call('approvePeer', clientId, selectedFolders);
+    cachedStatus = await server.call('getStatus');
+    sendToUI('status-update', cachedStatus);
+    return true;
+  });
+  ipcMain.handle('reject-peer', (_, clientId) => server.call('rejectPeer', clientId));
+  ipcMain.handle('rename-peer', async (_, hostname, friendlyName) => {
+    return callAndRefresh('renamePeer', hostname, friendlyName);
   });
 
-  ipcMain.handle('restore-save', async (_, gameId, ts) => {
-    return server?.gameSaveManager?.restore(gameId, ts);
+  // Hub
+  ipcMain.handle('set-hub-connection', (_, address, apiKey) => callAndRefresh('setHubConnection', address, apiKey));
+
+  // Window
+  ipcMain.handle('window-minimize', () => mainWindow?.minimize());
+  ipcMain.handle('window-close', () => mainWindow?.hide());
+  ipcMain.handle('pick-folder', async () => {
+    const r = await dialog.showOpenDialog({ properties: ['openDirectory'], title: 'Select folder to sync' });
+    return r.canceled ? null : r.filePaths[0];
   });
 
-  ipcMain.handle('restore-current', async (_, gameId) => {
-    return server?.gameSaveManager?.restoreCurrent(gameId);
-  });
+  // Diagnostics
+  ipcMain.handle('sync-diag', () => server.call('syncDiag'));
+  ipcMain.handle('force-push', (_, folder) => server.call('forcePush', folder));
 
-  ipcMain.handle('scan-games', async () => {
-    return server?.gameSaveManager?.scanNow();
-  });
+  // Game saves — all proxied to daemon
+  ipcMain.handle('get-game-library', () => server.call('getGameLibrary'));
+  ipcMain.handle('get-save-history', (_, gameId) => server.call('getSaveHistory', gameId));
+  ipcMain.handle('restore-save', (_, gameId, ts) => server.call('restoreSave', gameId, ts));
+  ipcMain.handle('restore-current', (_, gameId) => server.call('restoreCurrent', gameId));
+  ipcMain.handle('scan-games', () => server.call('scanGames'));
+  ipcMain.handle('add-custom-game', (_, cfg) => server.call('addCustomGame', cfg));
+  ipcMain.handle('remove-game', (_, gameId, del) => server.call('removeGame', gameId, del));
+  ipcMain.handle('rename-game', (_, gameId, name) => server.call('renameGame', gameId, name));
+  ipcMain.handle('set-game-excludes', (_, gameId, ex) => server.call('setGameExcludes', gameId, ex));
+  ipcMain.handle('get-game-excludes', (_, gameId) => server.call('getGameExcludes', gameId));
+  ipcMain.handle('toggle-game-sync', (_, gameId, on) => server.call('toggleGameSync', gameId, on));
+  ipcMain.handle('confirm-game', (_, gameId) => server.call('confirmGame', gameId));
+  ipcMain.handle('dismiss-game', (_, gameId) => server.call('dismissGame', gameId));
+  ipcMain.handle('backup-game-now', (_, gameId) => server.call('backupGameNow', gameId));
+  ipcMain.handle('get-backup-files', (_, gameId, dir) => server.call('getBackupFiles', gameId, dir));
+  ipcMain.handle('clean-backups', () => server.call('cleanBackups'));
 
-  ipcMain.handle('mass-lookup', () => {
-    // Run in background — don't block UI
-    if (!server?.gameSaveManager) return { found: 0, new: 0 };
-    server.gameSaveManager.massLookup().then(result => {
+  ipcMain.handle('mass-lookup', async () => {
+    // Run async — daemon handles the work, we forward the result
+    server.call('massLookup').then(result => {
       sendToUI('mass-lookup-done', result);
-      sendToUI('status-update', server.getStatus());
+      server.call('getStatus').then(s => { cachedStatus = s; sendToUI('status-update', s); }).catch(() => {});
     }).catch(err => sendToUI('mass-lookup-done', { error: err.message }));
     return { started: true };
   });
 
-  ipcMain.handle('clean-backups', async () => {
-    return server?.gameSaveManager?.backup?.cleanBackups() || { removed: 0 };
-  });
-
-  ipcMain.handle('sync-diag', () => {
-    const peers = [];
-    for (const [key, info] of server.peerConnections || new Map()) {
-      peers.push({ address: key, deviceName: info.deviceName, connected: info.connected, authenticated: info.client?.authenticated || false });
-    }
-    // Read last 20 lines of sync.log
-    let recentLog = '';
-    try {
-      const logPath = require('path').join(server.configDir, 'sync.log');
-      const content = require('fs').readFileSync(logPath, 'utf-8');
-      const lines = content.trim().split('\n');
-      recentLog = lines.slice(-20).join('\n');
-    } catch {}
-    return {
-      peerConnections: peers,
-      inboundClients: server.transport?.getConnectedClients() || [],
-      hubConnected: server.hubConnection?.authenticated || false,
-      pushQueues: Object.fromEntries([...(server._pushQueues || new Map())].map(([k, v]) => [k, v.size])),
-      watchedFolders: server.engine?.getFolderNames() || [],
-      recentLog,
-    };
-  });
-
-  ipcMain.handle('force-push', async (_, folderName) => {
-    const folder = server.config.folders.find(f => f.name === folderName);
-    if (!folder) return { error: 'Folder not in config' };
-    let pushed = 0;
-    for (const [, peerInfo] of server.peerConnections || new Map()) {
-      if (peerInfo.connected && peerInfo.client?.authenticated) {
-        try {
-          await server._pushFullFolder(folder);
-          pushed++;
-        } catch (err) { return { error: err.message }; }
-      }
-    }
-    return { pushed, totalPeers: server.peerConnections?.size || 0 };
-  });
-
-  ipcMain.handle('backup-all', () => {
-    // Run in background — don't block UI
-    if (!server?.gameSaveManager) return { success: 0, skipped: 0 };
-    server.gameSaveManager.backupAll((progress) => {
-      sendToUI('backup-all-progress', progress);
-    }).then(result => {
+  ipcMain.handle('backup-all', async () => {
+    // Progress events come via daemon 'backup-all-progress' event
+    server.call('backupAll').then(result => {
       sendToUI('backup-all-done', result);
     }).catch(err => sendToUI('backup-all-done', { error: err.message }));
     return { started: true };
   });
 
-  ipcMain.handle('open-folder', (_, folderPath) => {
-    if (folderPath) require('electron').shell.openPath(folderPath);
-  });
-
+  // Folders that need shell (must stay in main process)
+  ipcMain.handle('open-folder', (_, folderPath) => { if (folderPath) shell.openPath(folderPath); });
   ipcMain.handle('open-backup-folder', async (_, gameId, backupDir) => {
-    if (!server?.gameSaveManager) return;
-    const entry = server.gameSaveManager._library?.get(gameId);
-    if (!entry) return;
-    const displayName = server.gameSaveManager._getDisplayName(entry);
-    const fullPath = require('path').join(server.gameSaveManager.backup.gameDir(displayName), 'backups', backupDir);
-    require('electron').shell.openPath(fullPath);
+    const fullPath = await server.call('getBackupFolderPath', gameId, backupDir);
+    if (fullPath) shell.openPath(fullPath);
   });
-
-  ipcMain.handle('add-custom-game', async (_, cfg) => {
-    return server?.gameSaveManager?.addCustomGame(cfg);
-  });
-
-  ipcMain.handle('remove-game', async (_, gameId, deleteBackups) => {
-    return server?.gameSaveManager?.removeGame(gameId, deleteBackups);
-  });
-
-  ipcMain.handle('rename-game', async (_, gameId, name) => {
-    return server?.gameSaveManager?.renameGame(gameId, name);
-  });
-
-  ipcMain.handle('set-game-excludes', async (_, gameId, excludes) => {
-    return server?.gameSaveManager?.setGameExcludes(gameId, excludes);
-  });
-
-  ipcMain.handle('get-game-excludes', (_, gameId) => {
-    return server?.gameSaveManager?.getGameExcludes(gameId) || [];
-  });
-
-  ipcMain.handle('toggle-game-sync', async (_, gameId, enabled) => {
-    return server?.gameSaveManager?.toggleSync(gameId, enabled);
-  });
-
-  ipcMain.handle('confirm-game', async (_, gameId) => {
-    return server?.gameSaveManager?.confirmGame(gameId);
-  });
-
-  ipcMain.handle('dismiss-game', async (_, gameId) => {
-    return server?.gameSaveManager?.dismissGame(gameId);
-  });
-
-  ipcMain.handle('backup-game-now', async (_, gameId) => {
-    return server?.gameSaveManager?.backupNow(gameId);
-  });
-
   ipcMain.handle('pick-game-folder', async () => {
-    const result = await dialog.showOpenDialog({
-      properties: ['openDirectory'],
-      title: 'Select game save folder',
-    });
-    if (result.canceled) return null;
-    return result.filePaths[0];
+    const r = await dialog.showOpenDialog({ properties: ['openDirectory'], title: 'Select game save folder' });
+    return r.canceled ? null : r.filePaths[0];
   });
 
-  ipcMain.handle('get-backup-files', async (_, gameId, backupDir) => {
-    return server?.gameSaveManager?.getBackupFiles(gameId, backupDir) || [];
-  });
-
+  // Updates (runs in main process — needs app.quit)
   ipcMain.handle('check-update', async () => {
-    try {
-      return await getLatestRelease();
-    } catch (err) {
-      return { error: err.message };
-    }
+    try { return await getLatestRelease(); } catch (err) { return { error: err.message }; }
   });
-
   ipcMain.handle('download-update', async () => {
     try {
       const release = await getLatestRelease();
       if (!release.hasUpdate) return { success: false, message: 'Already up to date' };
       if (!release.url) return { success: false, message: 'No download URL' };
-
       sendToUI('activity', { type: 'update', message: `Downloading v${release.version}...`, time: Date.now() });
-
       const installerPath = await downloadInstaller(release.url, (pct) => {
         sendToUI('sync-progress', { phase: 'updating', file: `CarbonSync v${release.version}`, current: pct, total: 100 });
       });
-
       sendToUI('activity', { type: 'update', message: `Installing v${release.version}...`, time: Date.now() });
-
-      // Run installer silently and quit
       installAndRestart(installerPath, app);
-
       return { success: true, version: release.version, installing: true };
-    } catch (err) {
-      return { success: false, message: err.message };
-    }
+    } catch (err) { return { success: false, message: err.message }; }
   });
 }
 
-app.on('ready', async () => {
-  // Start daemon
-  server = new CarbonSyncDevice(configDir);
+// ---- App Lifecycle ----
 
-  server.on('ready', () => updateTrayMenu());
-  server.on('client-connected', (info) => {
+app.on('ready', async () => {
+  // Fork daemon into a separate process
+  server = new DaemonProxy(configDir);
+  server.start();
+
+  // Forward daemon events to renderer
+  server.on('ready', async () => {
+    cachedStatus = await server.call('getStatus').catch(() => ({}));
+    updateTrayMenu();
+    sendToUI('status-update', cachedStatus);
+  });
+  server.on('client-connected', async (info) => {
     updateTrayMenu();
     sendToUI('activity', { type: 'client-connected', ...info, time: Date.now() });
-    sendToUI('status-update', server.getStatus());
+    cachedStatus = await server.call('getStatus').catch(() => cachedStatus);
+    sendToUI('status-update', cachedStatus);
   });
-  server.on('client-disconnected', (info) => {
+  server.on('client-disconnected', async (info) => {
     updateTrayMenu();
     sendToUI('activity', { type: 'client-disconnected', ...info, time: Date.now() });
-    sendToUI('status-update', server.getStatus());
+    cachedStatus = await server.call('getStatus').catch(() => cachedStatus);
+    sendToUI('status-update', cachedStatus);
   });
-  server.on('changes', ({ folder, changes }) => {
-    sendToUI('status-update', server.getStatus());
-    sendToUI('activity', { type: 'file-changes', folder, count: changes.length, time: Date.now() });
+  server.on('changes', async ({ folder, changes }) => {
+    cachedStatus = await server.call('getStatus').catch(() => cachedStatus);
+    sendToUI('status-update', cachedStatus);
+    sendToUI('activity', { type: 'file-changes', folder, count: changes?.length || 0, time: Date.now() });
   });
-  server.on('progress', (p) => {
-    sendToUI('sync-progress', p);
+  server.on('progress', (p) => sendToUI('sync-progress', p));
+  server.on('sync-progress-update', async () => {
+    cachedStatus = await server.call('getStatus').catch(() => cachedStatus);
+    sendToUI('status-update', cachedStatus);
   });
-  server.on('sync-progress-update', () => {
-    sendToUI('status-update', server.getStatus());
-  });
-  server.on('peer-folders', () => {
-    sendToUI('status-update', server.getStatus());
+  server.on('peer-folders', async () => {
+    cachedStatus = await server.call('getStatus').catch(() => cachedStatus);
+    sendToUI('status-update', cachedStatus);
   });
   server.on('sync-request', (request) => {
-    console.log(`Sync request from: ${request.deviceName} (${request.ip})`);
     sendToUI('sync-request', request);
-    // Show window if hidden so user can approve
-    if (mainWindow && !mainWindow.isVisible()) {
-      mainWindow.show();
-      mainWindow.focus();
-    }
+    if (mainWindow && !mainWindow.isVisible()) { mainWindow.show(); mainWindow.focus(); }
   });
 
-  console.log('UI: creating window...');
+  // Game save events forwarded from daemon
+  server.on('game-detected', (info) => sendToUI('game-detected', info));
+  server.on('save-backed-up', (info) => {
+    sendToUI('save-backed-up', info);
+    sendToUI('activity', { type: 'game-backup', message: `Backed up ${info.game?.displayName || info.game?.name}: ${info.fileCount} files`, time: Date.now() });
+  });
+  server.on('game-running', (info) => sendToUI('game-running', info));
+  server.on('library-updated', () => sendToUI('game-library-updated', {}));
+  server.on('save-restored', (info) => {
+    sendToUI('save-restored', info);
+    sendToUI('activity', { type: 'game-restore', message: `Auto-restored ${info.game?.displayName || info.game?.name} from sync`, time: Date.now() });
+  });
+  server.on('backup-all-progress', (data) => sendToUI('backup-all-progress', data));
+
+  server.on('daemon-exit', ({ code }) => {
+    console.error(`Daemon exited unexpectedly (code ${code}), restarting...`);
+    setTimeout(() => { server.start(); }, 2000);
+  });
+
+  // Create UI
   createWindow();
-  console.log('UI: window created');
   setupIPC();
-  console.log('UI: IPC ready');
-  // Window shows via ready-to-show event in createWindow()
   mainWindow.focus();
-  console.log('UI: window shown');
 
   // Tray
   tray = new Tray(createTrayIcon());
   tray.setToolTip('CarbonSync');
   updateTrayMenu();
   tray.on('double-click', () => { mainWindow?.show(); mainWindow?.focus(); });
-  console.log('UI: tray created');
 
-  if (process.argv.includes('--hidden')) {
-    // Stay hidden — tray only
-  }
-
-  // Auto-start with Windows (respect config, default: on)
-  const startWithWindows = server.config.data.settings?.startWithWindows !== false;
-  app.setLoginItemSettings({ openAtLogin: startWithWindows, args: ['--hidden'] });
-
-  // Start server in background (may take a few seconds for firewall/scan)
-  server.start().then(() => {
-    updateTrayMenu();
-    sendToUI('status-update', server.getStatus());
-
-    // Forward game save events to renderer
-    if (server.gameSaveManager) {
-      server.gameSaveManager.on('game-detected', (info) => sendToUI('game-detected', info));
-      server.gameSaveManager.on('save-backed-up', (info) => {
-        sendToUI('save-backed-up', info);
-        sendToUI('activity', { type: 'game-backup', message: `Backed up ${info.game?.displayName || info.game?.name}: ${info.fileCount} files`, time: Date.now() });
-      });
-      server.gameSaveManager.on('game-running', (info) => sendToUI('game-running', info));
-      server.gameSaveManager.on('library-updated', () => sendToUI('game-library-updated', {}));
-      server.gameSaveManager.on('save-restored', (info) => {
-        sendToUI('save-restored', info);
-        sendToUI('activity', { type: 'game-restore', message: `Auto-restored ${info.game?.displayName || info.game?.name} from sync`, time: Date.now() });
-      });
+  // Start-with-Windows (read config from disk directly — fast, no IPC)
+  try {
+    const configPath = path.join(configDir, 'config.json');
+    if (fs.existsSync(configPath)) {
+      const cfg = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+      const startWithWindows = cfg.settings?.startWithWindows !== false;
+      app.setLoginItemSettings({ openAtLogin: startWithWindows, args: ['--hidden'] });
     }
-
-    // Auto-reconnect to saved peers
-    const savedPeers = server.config.data.savedPeers || [];
-    if (savedPeers.length > 0) {
-      console.log(`Reconnecting to ${savedPeers.length} saved peer(s)...`);
-      for (const peer of savedPeers) {
-        const displayName = peer.deviceName || peer.ip;
-        server.connectToPeer(peer.ip, peer.port).then(result => {
-          if (result.success) {
-            // Use saved friendly name, not raw hostname
-            const name = peer.deviceName || result.deviceName || peer.ip;
-            sendToUI('activity', { type: 'connect', message: `Reconnected to ${name}`, time: Date.now() });
-            const peerEntry = { role: 'peer', ip: peer.ip, port: peer.port, hostname: name, friendlyName: name };
-            if (server.discovery) server.discovery.services.set(peer.ip, peerEntry);
-            sendToUI('status-update', server.getStatus());
-          }
-        }).catch(() => {});
-      }
-    }
-  }).catch(err => {
-    console.error('Server start failed:', err);
-    sendToUI('activity', { type: 'error', message: `Server failed: ${err.message}`, time: Date.now() });
-  });
+  } catch {}
 });
 
-app.on('before-quit', (e) => {
-  if (app._quitting) return; // Already handled
-  app._quitting = true;
+app.on('before-quit', async () => {
   app.isQuitting = true;
-
-  // Force synchronous save of critical data before exit
-  try {
-    if (server?.gameSaveManager?._library?.size > 0) {
-      const games = Array.from(server.gameSaveManager._library.values()).map(g => ({
-        id: g.id, name: g.name, displayName: g.displayName, saveBase: g.saveBase,
-        rootKey: g.rootKey, relPath: g.relPath, enabled: g.enabled, isHeuristic: g.isHeuristic,
-        lastBackup: g.lastBackup, backupCount: g.backupCount, excludes: g.excludes,
-        knownDevices: g.knownDevices || {},
-      }));
-      const data = JSON.stringify({ version: 1, lastUpdated: new Date().toISOString(), games });
-      require('fs').writeFileSync(server.gameSaveManager._libraryPath, data, 'utf-8');
-      console.log(`Saved ${games.length} games on quit`);
-    }
-  } catch (err) {
-    console.error('Failed to save library on quit:', err.message);
+  if (server) {
+    try { await server.stop(); } catch {}
   }
-
-  if (server) server.stop().catch(() => {});
 });
 
 app.on('window-all-closed', () => { /* stay in tray */ });
