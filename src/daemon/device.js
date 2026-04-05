@@ -232,13 +232,18 @@ class CarbonSyncDevice extends EventEmitter {
       this._connectToHub();
     }
 
-    // Periodic sync: rescan + push/pull every 2 minutes to catch anything the watcher missed.
-    // Watchers are unreliable on Windows with large folders (e.g. Minecraft modpacks).
-    const PERIODIC_SYNC_MS = 2 * 60 * 1000;
+    // Fast sync every 15s: push/pull using current index (no disk rescan).
+    // Catches silently dropped pushes so sync stays near-instant.
+    this._quickSyncInterval = setInterval(() => {
+      if (!this._engineReady) return;
+      this._quickSyncAllPeers();
+    }, 15000);
+
+    // Full rescan every 5 minutes: safety net for when watchers miss changes.
     this._periodicSyncInterval = setInterval(() => {
       if (!this._engineReady) return;
       this._syncAllPeers();
-    }, PERIODIC_SYNC_MS);
+    }, 5 * 60 * 1000);
 
     // 7. Game save detection & backup
     if (this.config.data.settings?.gameSaveEnabled !== false) {
@@ -1600,6 +1605,44 @@ class CarbonSyncDevice extends EventEmitter {
   }
 
   /**
+   * Quick sync: push/pull all folders using current index (no rescan).
+   * Runs every 15s to catch any silently dropped pushes.
+   */
+  async _quickSyncAllPeers() {
+    if (this._quickSyncRunning) return;
+    this._quickSyncRunning = true;
+    try {
+      for (const folder of this.config.folders) {
+        if (!folder.enabled || folder.internal) continue;
+        const dir = folder.direction || 'both';
+        for (const [, peerInfo] of this.peerConnections) {
+          if (!peerInfo.connected || !peerInfo.client?.authenticated) continue;
+          try {
+            if (dir === 'receive' || dir === 'both') {
+              await this._pullFolderFromPeer(peerInfo, folder);
+            }
+            if (dir === 'push' || dir === 'both') {
+              await this._pushFullFolderToPeer(peerInfo, folder);
+            }
+          } catch (err) {
+            console.error(`Quick sync failed [${folder.name}→${peerInfo.deviceName}]: ${err.message}`);
+          }
+        }
+        if (this.hubConnection?.authenticated) {
+          try {
+            if (dir === 'receive' || dir === 'both') await this._pullFolder(folder);
+            if (dir === 'push' || dir === 'both') await this._pushFullFolder(folder);
+          } catch (err) {
+            console.error(`Quick hub sync failed [${folder.name}]: ${err.message}`);
+          }
+        }
+      }
+    } finally {
+      this._quickSyncRunning = false;
+    }
+  }
+
+  /**
    * Rescan all folders and sync with every connected peer.
    * Called on startup after initial scan, periodically, and on peer connect.
    */
@@ -1718,6 +1761,7 @@ class CarbonSyncDevice extends EventEmitter {
 
   async stop() {
     if (this._scanInterval) { clearInterval(this._scanInterval); this._scanInterval = null; }
+    if (this._quickSyncInterval) { clearInterval(this._quickSyncInterval); this._quickSyncInterval = null; }
     if (this._periodicSyncInterval) { clearInterval(this._periodicSyncInterval); this._periodicSyncInterval = null; }
     for (const [, timer] of this._pushTimers) clearTimeout(timer);
     this._pushTimers.clear();
