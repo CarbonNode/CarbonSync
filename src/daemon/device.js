@@ -128,9 +128,13 @@ class CarbonSyncDevice extends EventEmitter {
 
     // Start engine but don't await scan — let UI render first
     // Scan runs in background, UI updates via progress events
+    this._engineReady = false;
     this.engine.start().then(() => {
+      this._engineReady = true;
       this.emit('scan-complete');
       console.log('Initial scan complete');
+      // Trigger full sync with all peers once scan is done
+      this._syncAllPeers();
     }).catch(err => {
       console.error('Engine start failed:', err.message);
     });
@@ -228,9 +232,13 @@ class CarbonSyncDevice extends EventEmitter {
       this._connectToHub();
     }
 
-    // No periodic rescan — watcher handles real-time changes
-    // Startup scan above catches anything missed while app was closed
-    // Manual rescan available via UI button
+    // Periodic sync: rescan + push/pull every 2 minutes to catch anything the watcher missed.
+    // Watchers are unreliable on Windows with large folders (e.g. Minecraft modpacks).
+    const PERIODIC_SYNC_MS = 2 * 60 * 1000;
+    this._periodicSyncInterval = setInterval(() => {
+      if (!this._engineReady) return;
+      this._syncAllPeers();
+    }, PERIODIC_SYNC_MS);
 
     // 7. Game save detection & backup
     if (this.config.data.settings?.gameSaveEnabled !== false) {
@@ -1592,6 +1600,27 @@ class CarbonSyncDevice extends EventEmitter {
   }
 
   /**
+   * Rescan all folders and sync with every connected peer.
+   * Called on startup after initial scan, periodically, and on peer connect.
+   */
+  async _syncAllPeers() {
+    if (this._fullSyncRunning) return;
+    this._fullSyncRunning = true;
+    try {
+      for (const folder of this.config.folders) {
+        if (!folder.enabled || folder.internal) continue;
+        try {
+          await this.syncFolder(folder.name);
+        } catch (err) {
+          console.error(`Periodic sync failed [${folder.name}]: ${err.message}`);
+        }
+      }
+    } finally {
+      this._fullSyncRunning = false;
+    }
+  }
+
+  /**
    * Force rescan a folder and sync with all connected peers.
    * Called by UI "Rescan" button.
    */
@@ -1689,6 +1718,7 @@ class CarbonSyncDevice extends EventEmitter {
 
   async stop() {
     if (this._scanInterval) { clearInterval(this._scanInterval); this._scanInterval = null; }
+    if (this._periodicSyncInterval) { clearInterval(this._periodicSyncInterval); this._periodicSyncInterval = null; }
     for (const [, timer] of this._pushTimers) clearTimeout(timer);
     this._pushTimers.clear();
     if (this._httpServer) { this._httpServer.close(); this._httpServer = null; }
