@@ -595,6 +595,12 @@ class CarbonSyncDevice extends EventEmitter {
           mtime_ms: Math.floor(stat.mtimeMs),
         }, 30000);
 
+        if (resp.type === MSG.ERROR || resp.type === 'error') {
+          console.error(`FULL PUSH rejected [${relPath}]: ${resp.message}`);
+          const errLog = `[${new Date().toISOString()}] PUSH REJECTED: ${relPath} → ${peerInfo.deviceName}: ${resp.message}`;
+          try { fs.appendFileSync(path.join(this.configDir, 'sync.log'), errLog + '\n'); } catch {}
+          continue;
+        }
         if (resp.status === 'skip') continue;
 
         const header = Buffer.alloc(5);
@@ -1099,6 +1105,12 @@ class CarbonSyncDevice extends EventEmitter {
               size: data.length, hash, mtime_ms: Math.floor(stat.mtimeMs),
             }, 30000);
 
+            if (resp.type === 'error') {
+              const errLog = `[${new Date().toISOString()}] PUSH REJECTED: ${change.path} → ${peerInfo.deviceName}: ${resp.message}`;
+              console.error(errLog);
+              try { fs.appendFileSync(path.join(os.homedir(), '.carbonsync', 'sync.log'), errLog + '\n'); } catch {}
+              continue;
+            }
             if (resp.status === 'skip') continue;
 
             const header = Buffer.alloc(5);
@@ -1194,7 +1206,9 @@ class CarbonSyncDevice extends EventEmitter {
   _handleFilePushStart(client, msg) {
     const folder = this._findEngineFolder(msg.folder);
     if (!folder) {
-      console.log(`FILE_PUSH rejected: unknown folder '${msg.folder}' (engine has: ${[...(this.engine?.getFolderNames() || [])].join(', ')})`);
+      const errMsg = `FILE_PUSH rejected: unknown folder '${msg.folder}' (engine has: ${[...(this.engine?.getFolderNames() || [])].join(', ')})`;
+      console.log(errMsg);
+      try { fs.appendFileSync(path.join(this.configDir, 'sync.log'), `[${new Date().toISOString()}] ${errMsg}\n`); } catch {}
       writeFrame(client.socket, { type: MSG.ERROR, message: 'Unknown folder', _requestId: msg._requestId });
       return;
     }
