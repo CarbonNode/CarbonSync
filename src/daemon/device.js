@@ -595,7 +595,7 @@ class CarbonSyncDevice extends EventEmitter {
   /**
    * Pull a folder from a specific peer.
    */
-  async _pullFolderFromPeer(peerInfo, folder) {
+  async _pullFolderFromPeer(peerInfo, folder, _retryCount = 0) {
     if (!peerInfo.client?.authenticated) return;
     if (!this.engine?.folders.has(folder.name)) return;
 
@@ -614,7 +614,17 @@ class CarbonSyncDevice extends EventEmitter {
       return;
     }
 
-    if (response.type === MSG.ERROR || !response.diff) return;
+    if (response.type === MSG.ERROR) {
+      if (response.message?.includes('stale') && _retryCount < 5) {
+        const delay = Math.min(3000 * (_retryCount + 1), 15000);
+        console.log(`Peer index stale for ${folder.name}, retrying in ${delay / 1000}s (attempt ${_retryCount + 1}/5)`);
+        await new Promise(r => setTimeout(r, delay));
+        return this._pullFolderFromPeer(peerInfo, folder, _retryCount + 1);
+      }
+      console.error(`Pull from peer error [${folder.name}]: ${response.message}`);
+      return;
+    }
+    if (!response.diff) return;
 
     const { toDownload = [], toDelete = [], toCopy = [] } = response.diff;
     if (toDownload.length === 0 && toDelete.length === 0 && toCopy.length === 0) return;
@@ -757,7 +767,7 @@ class CarbonSyncDevice extends EventEmitter {
 
   // ---- Pull (device ← hub) ----
 
-  async _pullFolder(folder) {
+  async _pullFolder(folder, _retryCount = 0) {
     if (!this.hubConnection?.authenticated) return;
     if (!this.engine?.folders.has(folder.name)) return;
 
@@ -771,6 +781,12 @@ class CarbonSyncDevice extends EventEmitter {
     }, 60000);
 
     if (response.type === MSG.ERROR) {
+      if (response.message?.includes('stale') && _retryCount < 5) {
+        const delay = Math.min(3000 * (_retryCount + 1), 15000);
+        console.log(`Hub index stale for ${folder.name}, retrying in ${delay / 1000}s (attempt ${_retryCount + 1}/5)`);
+        await new Promise(r => setTimeout(r, delay));
+        return this._pullFolder(folder, _retryCount + 1);
+      }
       console.error(`Pull index error for ${folder.name}: ${response.message}`);
       return;
     }
@@ -1077,7 +1093,7 @@ class CarbonSyncDevice extends EventEmitter {
     try {
       switch (msg.type) {
         case MSG.INDEX_REQUEST:
-          this._handleIndexRequest(client, msg);
+          await this._handleIndexRequest(client, msg);
           break;
         case MSG.BLOCK_REQUEST:
           await this._handleBlockRequest(client, msg);
@@ -1306,7 +1322,7 @@ class CarbonSyncDevice extends EventEmitter {
 
   // ---- Existing handlers (from server.js) ----
 
-  _handleIndexRequest(client, msg) {
+  async _handleIndexRequest(client, msg) {
     const folder = this._findEngineFolder(msg.folder);
     if (!folder) {
       writeFrame(client.socket, { type: MSG.ERROR, message: 'Unknown folder', _requestId: msg._requestId });
@@ -1319,7 +1335,7 @@ class CarbonSyncDevice extends EventEmitter {
     }
 
     if (msg.clientIndex) {
-      const diff = this.engine.computeDiff(msg.folder, msg.clientIndex);
+      const diff = await this.engine.computeDiff(msg.folder, msg.clientIndex);
       writeFrame(client.socket, {
         type: MSG.INDEX_RESPONSE, folder: msg.folder,
         rootHash: this.engine.getRootHash(msg.folder),
@@ -1552,6 +1568,40 @@ class CarbonSyncDevice extends EventEmitter {
     if (folder) {
       this.engine.addFolder(folder);
       await this.engine.rescan(folder.name);
+
+      // Sync the new folder with all connected peers
+      for (const [, peerInfo] of this.peerConnections) {
+        if (peerInfo.connected && peerInfo.client?.authenticated) {
+          const dir = folder.direction || 'both';
+          try {
+            if (dir === 'receive' || dir === 'both') {
+              await this._pullFolderFromPeer(peerInfo, folder);
+              peerInfo.client.send({ type: MSG.SUBSCRIBE, folder: folder.name });
+            }
+            if (dir === 'push' || dir === 'both') {
+              await this._pushFullFolderToPeer(peerInfo, folder);
+            }
+          } catch (err) {
+            console.error(`Sync new folder ${folder.name} with ${peerInfo.deviceName} failed: ${err.message}`);
+          }
+        }
+      }
+
+      // Also sync with hub if connected
+      if (this.hubConnection?.authenticated) {
+        try {
+          const dir = folder.direction || 'both';
+          if (dir === 'receive' || dir === 'both') {
+            await this._pullFolder(folder);
+            this.hubConnection.send({ type: MSG.SUBSCRIBE, folder: folder.name });
+          }
+          if (dir === 'push' || dir === 'both') {
+            await this._pushFullFolder(folder);
+          }
+        } catch (err) {
+          console.error(`Sync new folder ${folder.name} with hub failed: ${err.message}`);
+        }
+      }
     }
   }
 

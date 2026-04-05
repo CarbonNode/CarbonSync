@@ -132,7 +132,7 @@ class CarbonSyncClient extends EventEmitter {
     }
   }
 
-  async _syncFolder(folderName) {
+  async _syncFolder(folderName, _retryCount = 0) {
     if (!this.connection?.authenticated) return;
 
     const folder = this.config.folders.find(f => f.name === folderName);
@@ -165,6 +165,12 @@ class CarbonSyncClient extends EventEmitter {
     }
 
     if (response.type === MSG.ERROR) {
+      if (response.message?.includes('stale') && _retryCount < 5) {
+        const delay = Math.min(3000 * (_retryCount + 1), 15000);
+        console.log(`Server index stale for ${folderName}, retrying in ${delay / 1000}s (attempt ${_retryCount + 1}/5)`);
+        await new Promise(r => setTimeout(r, delay));
+        return this._syncFolder(folderName, _retryCount + 1);
+      }
       console.error(`Index error: ${response.message}`);
       return;
     }

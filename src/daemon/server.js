@@ -133,7 +133,7 @@ class CarbonSyncServer extends EventEmitter {
     try {
       switch (msg.type) {
         case MSG.INDEX_REQUEST:
-          this._handleIndexRequest(client, msg);
+          await this._handleIndexRequest(client, msg);
           break;
         case MSG.BLOCK_REQUEST:
           await this._handleBlockRequest(client, msg);
@@ -187,7 +187,7 @@ class CarbonSyncServer extends EventEmitter {
     }
   }
 
-  _handleIndexRequest(client, msg) {
+  async _handleIndexRequest(client, msg) {
     const folderName = msg.folder;
     const folder = this.engine.folders.get(folderName);
 
@@ -204,7 +204,7 @@ class CarbonSyncServer extends EventEmitter {
 
     if (msg.clientIndex) {
       // Diff mode
-      const diff = this.engine.computeDiff(folderName, msg.clientIndex);
+      const diff = await this.engine.computeDiff(folderName, msg.clientIndex);
       writeFrame(client.socket, {
         type: MSG.INDEX_RESPONSE,
         folder: folderName,

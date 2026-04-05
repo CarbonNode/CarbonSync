@@ -286,16 +286,31 @@ class SyncEngine extends EventEmitter {
    * toCopy = move/rename detection: if client has a file with the same hash
    * at a different path, the client can copy locally instead of re-downloading.
    */
-  computeDiff(folderName, clientIndex) {
+  async computeDiff(folderName, clientIndex) {
     const folder = this.folders.get(folderName);
     if (!folder) return null;
 
+    // Upgrade any fast: hashes on the server side before comparing.
+    // Without real hashes the diff can't tell what's actually different.
     const serverIndex = folder.scanner.getIndexMap();
+    const needsUpgrade = [];
+    for (const [relPath, entry] of serverIndex) {
+      if (entry.hash.startsWith('fast:')) needsUpgrade.push(relPath);
+    }
+    if (needsUpgrade.length > 0) {
+      for (const relPath of needsUpgrade) {
+        const upgraded = await folder.scanner.ensureRealHash(relPath);
+        if (upgraded) serverIndex.set(relPath, upgraded);
+      }
+    }
+
     const clientMap = new Map();
     const clientHashMap = new Map(); // hash -> [paths] for move detection
 
     for (const entry of clientIndex) {
       clientMap.set(entry.path, entry);
+      // Skip fast: hashes for move detection — they're not real content hashes
+      if (entry.hash.startsWith('fast:')) continue;
       if (!clientHashMap.has(entry.hash)) clientHashMap.set(entry.hash, []);
       clientHashMap.get(entry.hash).push(entry.path);
     }
@@ -306,7 +321,16 @@ class SyncEngine extends EventEmitter {
 
     for (const [relPath, serverEntry] of serverIndex) {
       const clientEntry = clientMap.get(relPath);
-      if (clientEntry && clientEntry.hash === serverEntry.hash) continue; // In sync
+
+      // If client has a fast: hash, we can't compare — must re-check by size+mtime
+      if (clientEntry) {
+        if (clientEntry.hash === serverEntry.hash) continue; // In sync
+        if (clientEntry.hash.startsWith('fast:') &&
+            clientEntry.size === serverEntry.size) {
+          // Same size with a fast hash — likely the same file, skip
+          continue;
+        }
+      }
 
       // File needs updating. Check if client has it at a different path (rename/move)
       const existingPaths = clientHashMap.get(serverEntry.hash);
@@ -340,12 +364,12 @@ class SyncEngine extends EventEmitter {
   }
 
   /**
-   * Force rescan a folder.
+   * Force rescan a folder (bypasses the 60s scan cache).
    */
   async rescan(folderName) {
     const folder = this.folders.get(folderName);
     if (!folder) return null;
-    return folder.scanner.fullScan();
+    return folder.scanner.fullScan({ force: true });
   }
 
   /**
