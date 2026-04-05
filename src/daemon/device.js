@@ -313,6 +313,15 @@ class CarbonSyncDevice extends EventEmitter {
           res.statusCode = 500;
           res.end(JSON.stringify({ error: err.message }));
         }
+      } else if (req.url === '/sync-log') {
+        try {
+          const logPath = require('path').join(this.configDir, 'sync.log');
+          const content = require('fs').readFileSync(logPath, 'utf-8');
+          const lines = content.trim().split('\n').slice(-50);
+          res.end(JSON.stringify({ lines }));
+        } catch (err) {
+          res.end(JSON.stringify({ lines: [], error: err.message }));
+        }
       } else {
         res.statusCode = 404;
         res.end(JSON.stringify({ error: 'Not found. Use /status or /health' }));
