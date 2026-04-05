@@ -338,7 +338,8 @@ class CarbonSyncDevice extends EventEmitter {
 
     this.hubConnection.on('message', (msg) => {
       if (msg.type === MSG.NOTIFY) {
-        const folderConfig = this.config.folders.find(f => f.name === msg.folder);
+        const folderConfig = this.config.folders.find(f => f.name === msg.folder) ||
+                             this.config.folders.find(f => f.name?.toLowerCase() === msg.folder?.toLowerCase());
         if (folderConfig && (folderConfig.direction === 'receive' || folderConfig.direction === 'both')) {
           this._pullFolder(folderConfig);
         }
@@ -459,9 +460,12 @@ class CarbonSyncDevice extends EventEmitter {
       client.on('message', (msg) => {
         if (msg.type === MSG.NOTIFY) {
           // Peer has changes — re-sync that folder
-          const folderConfig = this.config.folders.find(f => f.name === msg.folder);
+          const folderConfig = this.config.folders.find(f => f.name === msg.folder) ||
+                               this.config.folders.find(f => f.name?.toLowerCase() === msg.folder?.toLowerCase());
           if (folderConfig && (folderConfig.direction === 'receive' || folderConfig.direction === 'both')) {
             this._pullFolderFromPeer(peerInfo, folderConfig);
+          } else {
+            console.log(`NOTIFY ignored: folder=${msg.folder} config=${folderConfig ? 'found,dir=' + folderConfig.direction : 'NOT FOUND'}`);
           }
         } else if (msg.type === MSG.FOLDER_LIST) {
           this.peerFolders.set(peerInfo.deviceName || key, msg.folders);
@@ -519,9 +523,15 @@ class CarbonSyncDevice extends EventEmitter {
    * Push all files the peer is missing for a folder.
    */
   async _pushFullFolderToPeer(peerInfo, folder) {
-    if (!peerInfo.client?.authenticated) return;
+    if (!peerInfo.client?.authenticated) {
+      console.log(`Push to ${peerInfo.deviceName} skipped: not authenticated`);
+      return;
+    }
     const engineFolder = this._findEngineFolder(folder.name);
-    if (!engineFolder) return;
+    if (!engineFolder) {
+      console.log(`Push to ${peerInfo.deviceName} skipped: engine folder '${folder.name}' not found (engine has: ${this.engine?.getFolderNames().join(', ')})`);
+      return;
+    }
 
     const localIndex = engineFolder.scanner.getIndex();
 
@@ -1040,12 +1050,18 @@ class CarbonSyncDevice extends EventEmitter {
 
     if (this._pushTimers.has(key)) clearTimeout(this._pushTimers.get(key));
     this._pushTimers.set(key, setTimeout(async () => {
-      if (!peerInfo.connected) return;
+      if (!peerInfo.connected || !peerInfo.client?.authenticated) {
+        console.log(`Push skipped: ${peerInfo.deviceName} not connected/authenticated for ${folderName}`);
+        return;
+      }
       const items = [...queue].map(s => JSON.parse(s));
       queue.clear();
 
       const folder = this.config.folders.find(f => f.name === folderName);
-      if (!folder) return;
+      if (!folder) {
+        console.log(`Push skipped: folder ${folderName} not found in config`);
+        return;
+      }
 
       const pushLog = `[${new Date().toISOString()}] PUSH: ${items.length} files to ${peerInfo.deviceName} for ${folderName}`;
       console.log(pushLog);
@@ -1146,12 +1162,18 @@ class CarbonSyncDevice extends EventEmitter {
   _findEngineFolder(name) {
     // Direct match
     if (this.engine?.folders.has(name)) return this.engine.folders.get(name);
-    // Match by config name → path → engine
+    // Match by config name → path → engine (case-insensitive for Windows)
     const cfgFolder = this.config.folders.find(f => f.name === name);
     if (cfgFolder) {
+      const cfgPath = path.resolve(cfgFolder.path).toLowerCase();
       for (const [, ef] of this.engine?.folders || new Map()) {
-        if (ef.path === cfgFolder.path) return ef;
+        if (path.resolve(ef.path).toLowerCase() === cfgPath) return ef;
       }
+    }
+    // Last resort: try matching engine folder names case-insensitively
+    const nameLower = name.toLowerCase();
+    for (const [engineName, ef] of this.engine?.folders || new Map()) {
+      if (engineName.toLowerCase() === nameLower) return ef;
     }
     return null;
   }
@@ -1567,6 +1589,50 @@ class CarbonSyncDevice extends EventEmitter {
       })),
       peers,
     };
+  }
+
+  /**
+   * Force rescan a folder and sync with all connected peers.
+   * Called by UI "Rescan" button.
+   */
+  async syncFolder(folderName) {
+    // Force rescan local files first
+    await this.engine.rescan(folderName);
+
+    const folder = this.config.folders.find(f => f.name === folderName);
+    if (!folder) return;
+    const dir = folder.direction || 'both';
+
+    // Sync with all connected peers
+    for (const [, peerInfo] of this.peerConnections) {
+      if (!peerInfo.connected || !peerInfo.client?.authenticated) continue;
+      try {
+        if (dir === 'receive' || dir === 'both') {
+          console.log(`Sync: pulling ${folderName} from ${peerInfo.deviceName}`);
+          await this._pullFolderFromPeer(peerInfo, folder);
+        }
+        if (dir === 'push' || dir === 'both') {
+          console.log(`Sync: pushing ${folderName} to ${peerInfo.deviceName}`);
+          await this._pushFullFolderToPeer(peerInfo, folder);
+        }
+      } catch (err) {
+        console.error(`Sync with ${peerInfo.deviceName} failed [${folderName}]: ${err.message}`);
+      }
+    }
+
+    // Sync with hub if connected
+    if (this.hubConnection?.authenticated) {
+      try {
+        if (dir === 'receive' || dir === 'both') {
+          await this._pullFolder(folder);
+        }
+        if (dir === 'push' || dir === 'both') {
+          await this._pushFullFolder(folder);
+        }
+      } catch (err) {
+        console.error(`Hub sync failed [${folderName}]: ${err.message}`);
+      }
+    }
   }
 
   async addFolder(folderPath, name, direction, folderId) {

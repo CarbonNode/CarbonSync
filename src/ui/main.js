@@ -180,6 +180,7 @@ function setupIPC() {
   });
 
   ipcMain.handle('rescan', async (_, folderName) => {
+    if (server?.syncFolder) return server.syncFolder(folderName);
     if (server?.engine) return server.engine.rescan(folderName);
   });
 
