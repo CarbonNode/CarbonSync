@@ -499,6 +499,22 @@ class CarbonSyncDevice extends EventEmitter {
         peerInfo.connected = false;
         console.log(`Peer disconnected: ${peerInfo.deviceName || key}`);
         this.emit('peer-disconnected', { ip, port, deviceName: peerInfo.deviceName });
+
+        // Auto-reconnect with backoff (only for saved peers)
+        const isSaved = (this.config.data.savedPeers || []).some(p => p.ip === ip);
+        if (isSaved && !this._stopping) {
+          const delay = 10000 + Math.random() * 5000; // 10-15s jitter
+          console.log(`Will reconnect to ${peerInfo.deviceName || ip} in ${Math.round(delay / 1000)}s`);
+          setTimeout(() => {
+            if (this._stopping) return;
+            if (peerInfo.connected) return; // Already reconnected (e.g. inbound)
+            console.log(`Reconnecting to ${peerInfo.deviceName || ip}...`);
+            this.connectToPeer(ip, port).then(r => {
+              if (r.success) console.log(`Reconnected to ${peerInfo.deviceName || ip}`);
+              else console.log(`Reconnect failed: ${r.message}`);
+            }).catch(() => {});
+          }, delay);
+        }
       });
 
       client.on('error', (err) => {
@@ -1179,6 +1195,17 @@ class CarbonSyncDevice extends EventEmitter {
             this.emit('peer-folders', { peer: client.deviceName, deviceName: client.deviceName, folders: msg.folders || [] });
           }
           break;
+        case MSG.HASH_CHECK: {
+          // Respond with root hashes for all enabled folders
+          const hashes = {};
+          for (const f of this.config.folders) {
+            if (!f.enabled || f.internal) continue;
+            const ef = this._findEngineFolder(f.name);
+            if (ef) hashes[f.name] = ef.scanner.getRootHash();
+          }
+          writeFrame(client.socket, { type: MSG.HASH_CHECK_RESPONSE, hashes, _requestId: msg._requestId });
+          break;
+        }
         case MSG.PING:
           writeFrame(client.socket, { type: MSG.PONG, _requestId: msg._requestId });
           break;
@@ -1628,18 +1655,39 @@ class CarbonSyncDevice extends EventEmitter {
   }
 
   /**
-   * Quick sync: push/pull all folders using current index (no rescan).
-   * Runs every 15s to catch any silently dropped pushes.
+   * Quick sync: compare root hashes with each peer, only do full push/pull
+   * for folders that actually differ. Runs every 15s — nearly free when in sync.
    */
   async _quickSyncAllPeers() {
     if (this._quickSyncRunning) return;
     this._quickSyncRunning = true;
     try {
-      for (const folder of this.config.folders) {
-        if (!folder.enabled || folder.internal) continue;
-        const dir = folder.direction || 'both';
-        for (const [, peerInfo] of this.peerConnections) {
-          if (!peerInfo.connected || !peerInfo.client?.authenticated) continue;
+      for (const [, peerInfo] of this.peerConnections) {
+        if (!peerInfo.connected || !peerInfo.client?.authenticated) continue;
+
+        // Ask peer for root hashes of all its folders
+        let peerHashes;
+        try {
+          const resp = await peerInfo.client.request({ type: MSG.HASH_CHECK }, 10000);
+          peerHashes = resp.hashes || {};
+        } catch {
+          // Peer doesn't support HASH_CHECK (older version) — fall back to full sync
+          peerHashes = null;
+        }
+
+        for (const folder of this.config.folders) {
+          if (!folder.enabled || folder.internal) continue;
+          const dir = folder.direction || 'both';
+          const ef = this._findEngineFolder(folder.name);
+          if (!ef) continue;
+
+          // If peer supports hash check and hashes match, skip this folder
+          if (peerHashes !== null) {
+            const localHash = ef.scanner.getRootHash();
+            const peerHash = peerHashes[folder.name];
+            if (peerHash && localHash === peerHash) continue; // In sync — skip
+          }
+
           try {
             if (dir === 'receive' || dir === 'both') {
               await this._pullFolderFromPeer(peerInfo, folder);
@@ -1651,7 +1699,13 @@ class CarbonSyncDevice extends EventEmitter {
             console.error(`Quick sync failed [${folder.name}→${peerInfo.deviceName}]: ${err.message}`);
           }
         }
-        if (this.hubConnection?.authenticated) {
+      }
+
+      // Hub sync with hash check
+      if (this.hubConnection?.authenticated) {
+        for (const folder of this.config.folders) {
+          if (!folder.enabled || folder.internal) continue;
+          const dir = folder.direction || 'both';
           try {
             if (dir === 'receive' || dir === 'both') await this._pullFolder(folder);
             if (dir === 'push' || dir === 'both') await this._pushFullFolder(folder);
@@ -1783,6 +1837,7 @@ class CarbonSyncDevice extends EventEmitter {
   }
 
   async stop() {
+    this._stopping = true;
     if (this._scanInterval) { clearInterval(this._scanInterval); this._scanInterval = null; }
     if (this._quickSyncInterval) { clearInterval(this._quickSyncInterval); this._quickSyncInterval = null; }
     if (this._periodicSyncInterval) { clearInterval(this._periodicSyncInterval); this._periodicSyncInterval = null; }

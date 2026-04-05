@@ -45,6 +45,10 @@ const MSG = {
   PUSH_DIFF: 'push_diff',             // Hub responds with what it needs
   FOLDER_LIST: 'folder_list',         // Hub broadcasts available folders
 
+  // Quick sync
+  HASH_CHECK: 'hash_check',           // Ask peer for root hashes of all folders
+  HASH_CHECK_RESPONSE: 'hash_check_response',
+
   // Game saves
   SAVE_PUSH: 'save_push',
   SAVE_PUSH_ACK: 'save_push_ack',
