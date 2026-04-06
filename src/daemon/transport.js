@@ -318,13 +318,16 @@ class SyncClient extends EventEmitter {
     this.connected = false;
     this.authenticated = false;
     this._reconnectTimer = null;
+    this._autoReconnect = true;   // Auto-reconnect on unexpected disconnects
+    this._explicitDisconnect = false; // Set when user calls disconnect()
     this._pendingRequests = new Map();
     this._requestId = 0;
     this._binaryCollector = null;
   }
 
   connect() {
-    if (this.socket) this.disconnect();
+    this._explicitDisconnect = false;
+    if (this.socket) { try { this.socket.destroy(); } catch {} this.socket = null; }
     this._requestId = 0;
 
     this.parser = new FrameParser();
@@ -461,6 +464,8 @@ class SyncClient extends EventEmitter {
   send(message) { if (this.connected) writeFrame(this.socket, message); }
 
   disconnect() {
+    this._explicitDisconnect = true;
+    this._autoReconnect = false;
     if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
     for (const [, pending] of this._pendingRequests) {
       clearTimeout(pending.timeout);
@@ -478,8 +483,10 @@ class SyncClient extends EventEmitter {
 
   _scheduleReconnect() {
     if (this._reconnectTimer) return;
+    if (this._explicitDisconnect || !this._autoReconnect) return; // Don't reconnect after explicit disconnect
     this._reconnectTimer = setTimeout(() => {
       this._reconnectTimer = null;
+      if (this._explicitDisconnect || !this._autoReconnect) return; // Double-check (flag could flip during delay)
       console.log(`Reconnecting to ${this.host}:${this.port}...`);
       this.connect();
     }, 5000);

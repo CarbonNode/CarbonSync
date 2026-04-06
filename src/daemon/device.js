@@ -439,9 +439,16 @@ class CarbonSyncDevice extends EventEmitter {
     const key = `${ip}:${port}`;
     if (this.peerConnections.has(key)) {
       const existing = this.peerConnections.get(key);
-      if (existing.client?.connected) return { success: true, message: 'Already connected' };
-      // Disconnect old one
+      if (existing.client?.connected || existing.client?.authenticated) {
+        return { success: true, message: 'Already connected' };
+      }
+      // If an attempt is in flight, don't start another one
+      if (existing._connecting && Date.now() - existing._connecting < 15000) {
+        return { success: false, message: 'Connection attempt already in progress' };
+      }
+      // Clean up old orphaned client
       existing.client?.disconnect();
+      this.peerConnections.delete(key);
     }
 
     const client = new SyncClient({
@@ -452,16 +459,25 @@ class CarbonSyncDevice extends EventEmitter {
       deviceName: this.config.deviceName,
     });
 
-    const peerInfo = { client, ip, port, deviceName: null, connected: false };
+    const peerInfo = { client, ip, port, deviceName: null, connected: false, _connecting: Date.now() };
     this.peerConnections.set(key, peerInfo);
 
     return new Promise((resolve) => {
+      const finish = (result) => {
+        peerInfo._connecting = null;
+        resolve(result);
+      };
       const timeout = setTimeout(() => {
+        peerInfo._connecting = null;
+        // Clean up the orphaned client on timeout so it doesn't keep reconnecting
+        try { client.disconnect(); } catch {}
+        this.peerConnections.delete(key);
         resolve({ success: false, message: 'Connection timed out' });
       }, 10000);
 
       client.on('authenticated', async (msg) => {
         clearTimeout(timeout);
+        peerInfo._connecting = null;
         peerInfo.deviceName = msg.serverName || ip;
         peerInfo.connected = true;
         console.log(`Connected to peer: ${peerInfo.deviceName} (${key})`);
@@ -520,7 +536,13 @@ class CarbonSyncDevice extends EventEmitter {
       client.on('error', (err) => {
         clearTimeout(timeout);
         console.error(`Peer ${key} error: ${err.message}`);
-        if (!peerInfo.connected) resolve({ success: false, message: err.message });
+        if (!peerInfo.connected) {
+          peerInfo._connecting = null;
+          // On ENOBUFS/ECONNREFUSED/ETIMEDOUT, clean up so we don't leak
+          try { client.disconnect(); } catch {}
+          this.peerConnections.delete(key);
+          resolve({ success: false, message: err.message });
+        }
       });
 
       client.connect();
