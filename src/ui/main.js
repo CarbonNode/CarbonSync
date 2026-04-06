@@ -38,7 +38,10 @@ function sendToUI(channel, data) {
 }
 
 const gotLock = app.requestSingleInstanceLock();
-if (!gotLock) { app.quit(); }
+if (!gotLock) {
+  console.log('Another CarbonSync instance is already running — exiting');
+  app.exit(0); // Immediate exit, doesn't wait for async quit
+}
 app.on('second-instance', () => { mainWindow?.show(); mainWindow?.focus(); });
 
 // ---- Window & Tray ----

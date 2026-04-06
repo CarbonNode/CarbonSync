@@ -216,6 +216,15 @@ class CarbonSyncDevice extends EventEmitter {
 
     this.transport.on('message', (client, msg) => this._handleMessage(client, msg));
     this.transport.on('binary', (client, data) => this._handleBinary(client, data));
+
+    // Fatal error if port is already in use (another CarbonSync instance)
+    this.transport.on('error', (err) => {
+      if (err.code === 'EADDRINUSE') {
+        console.error(`\n!!! Port ${this.config.port} is already in use — another CarbonSync instance is running. Exiting. !!!\n`);
+        process.exit(1);
+      }
+    });
+
     this.transport.start();
 
     // 4. Discovery
