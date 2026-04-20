@@ -374,6 +374,26 @@ class SyncEngine extends EventEmitter {
   }
 
   /**
+   * Phase 7 P0: true only when EVERY enabled folder's scanner reports its
+   * initial full scan complete. device.js gates every sync entry point on
+   * this — if it returns false we have at least one folder whose index is
+   * still partial, and any sync run would treat unscanned-yet local files
+   * as "we don't have these," which the peer would interpret as deletions.
+   *
+   * Counts as ready if there are no folders at all (nothing to gate).
+   */
+  areAllFoldersScanned() {
+    if (!this.folders || this.folders.size === 0) return true;
+    for (const [, folder] of this.folders) {
+      if (!folder.scanner || typeof folder.scanner.isInitialScanComplete !== 'function') {
+        return false;
+      }
+      if (!folder.scanner.isInitialScanComplete()) return false;
+    }
+    return true;
+  }
+
+  /**
    * Stop all watchers and close databases.
    */
   async stop() {

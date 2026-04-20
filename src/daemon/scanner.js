@@ -76,6 +76,22 @@ class Scanner {
       console.warn(`Phase 5 peer_state migration failed: ${err.message}`);
     }
 
+    // Phase 7: backfill initial_scan_complete for installs upgraded from a
+    // version that never wrote this marker. If last_scan exists we KNOW a
+    // fullScan reached the success path before, so the prior index is sound
+    // — preserve that and mark the folder ready immediately. Without this,
+    // every upgraded folder would re-gate sync until the next scan completes.
+    try {
+      const lastScan = this.db.prepare("SELECT value FROM meta WHERE key = ?").get('last_scan');
+      const scanComplete = this.db.prepare("SELECT value FROM meta WHERE key = ?").get('initial_scan_complete');
+      if (lastScan && !scanComplete) {
+        this.db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)')
+          .run('initial_scan_complete', '1');
+      }
+    } catch (err) {
+      console.warn(`Phase 7 initial_scan_complete backfill failed: ${err.message}`);
+    }
+
     this._stmtUpsert = this.db.prepare(`
       INSERT INTO files (path, size, mtime_ms, hash, scanned_at)
       VALUES (?, ?, ?, ?, ?)
@@ -264,6 +280,19 @@ class Scanner {
     return !!row;
   }
 
+  // ---- Phase 7: initial-scan-complete marker ----
+
+  /**
+   * @returns {boolean} true if at least one fullScan() has run to completion
+   * (purge-step inclusive) for this folder. Persisted in the meta table so a
+   * user who restarts the app mid-scan resumes safely — sync stays gated until
+   * the next scan completes. Used by device.js to gate every sync entry point.
+   */
+  isInitialScanComplete() {
+    const row = this._stmtGetMeta.get('initial_scan_complete');
+    return row?.value === '1';
+  }
+
   /**
    * Cancel a running scan.
    */
@@ -393,6 +422,12 @@ class Scanner {
 
       // Mark scan as complete
       this._stmtSetMeta.run('last_scan', String(scanId));
+      // Phase 7 P0: persist that the initial full scan finished for this
+      // folder. device.js gates every sync entry point on this — without it,
+      // a peer can connect before the index is complete and treat unscanned-
+      // yet local files as "we don't have these," driving wrong toDelete.
+      // Persisted so app restarts mid-scan stay gated until the next finish.
+      this._stmtSetMeta.run('initial_scan_complete', '1');
       this._stale = false;
 
       return stats;

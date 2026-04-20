@@ -70,6 +70,14 @@ class CarbonSyncDevice extends EventEmitter {
     // so we don't re-seed on every reconnect. Process-lifetime memory is
     // sufficient because hasPeerKnown() short-circuits on subsequent runs.
     this._seededPeers = new Set();
+    // Phase 7 P0: rate-limit per-peer "engine not ready" log lines. Without
+    // this, every NOTIFY/PUSH_INDEX/INDEX_REQUEST during the boot window
+    // would spam the log. Map<peerName, lastLogTimestamp>; one line per peer
+    // per minute is plenty for diagnostics.
+    this._engineNotReadyLogged = new Map();
+    // Phase 7 P0: poll timer that flips _engineReady true once engine.start()
+    // has resolved AND every enabled folder reports isInitialScanComplete().
+    this._engineReadyPoll = null;
   }
 
   /**
@@ -139,6 +147,29 @@ class CarbonSyncDevice extends EventEmitter {
         }
       } catch (err) {
         console.warn(`Mark peer discovering failed [${folder.name}]: ${err.message}`);
+      }
+    }
+  }
+
+  /**
+   * Phase 7 P0: rate-limited "engine not ready" warning. Called by every
+   * gated sync entry point so a spammy peer can't fill the log during boot.
+   * One line per peer per minute is enough to know what's deferred.
+   */
+  _logEngineNotReady(peerName) {
+    const key = peerName || 'unknown';
+    const now = Date.now();
+    const last = this._engineNotReadyLogged.get(key) || 0;
+    if (now - last < 60_000) return;
+    this._engineNotReadyLogged.set(key, now);
+    const line = `[${new Date().toISOString()}] ENGINE-NOT-READY: deferred sync from peer=${key} — initial scan still running, peer will be picked up by 15s quick-sync once ready`;
+    console.log(line);
+    try { fs.appendFileSync(path.join(this.configDir, 'sync.log'), line + '\n'); } catch {}
+    // Bound the map so a long uptime with many transient peers can't grow it.
+    if (this._engineNotReadyLogged.size > 256) {
+      const cutoff = now - 5 * 60_000;
+      for (const [k, ts] of this._engineNotReadyLogged) {
+        if (ts < cutoff) this._engineNotReadyLogged.delete(k);
       }
     }
   }
@@ -424,13 +455,48 @@ class CarbonSyncDevice extends EventEmitter {
 
     // Start engine but don't await scan — let UI render first
     // Scan runs in background, UI updates via progress events
+    //
+    // Phase 7 P0: _engineReady is true ONLY when engine.start() has resolved
+    // AND every enabled folder reports isInitialScanComplete(). Resolution of
+    // engine.start() alone is NOT sufficient — that promise can settle while
+    // a folder's scanner is still mid-batch (or while a freshly added folder
+    // hasn't started scanning yet). A 2s poll re-checks until all folders
+    // are ready, then stops. Inbound NOTIFY/PUSH_INDEX/INDEX_REQUEST and
+    // authentication-triggered syncs are gated on this flag — gaps in the
+    // scanner index would otherwise be interpreted by the peer as deletions.
     this._engineReady = false;
+    this._engineStarted = false;
+    const reevaluateReady = () => {
+      if (!this._engineStarted || !this.engine) return false;
+      try {
+        const ready = typeof this.engine.areAllFoldersScanned === 'function'
+          ? this.engine.areAllFoldersScanned()
+          : true;
+        if (ready && !this._engineReady) {
+          this._engineReady = true;
+          this.emit('scan-complete');
+          console.log('Initial scan complete (all folders)');
+          // Trigger full sync with all peers once scan is done
+          this._syncAllPeers();
+          if (this._engineReadyPoll) {
+            clearInterval(this._engineReadyPoll);
+            this._engineReadyPoll = null;
+          }
+        }
+        return ready;
+      } catch (err) {
+        console.warn(`Engine-ready check failed: ${err.message}`);
+        return false;
+      }
+    };
+    this._reevaluateEngineReady = reevaluateReady;
     this.engine.start().then(() => {
-      this._engineReady = true;
-      this.emit('scan-complete');
-      console.log('Initial scan complete');
-      // Trigger full sync with all peers once scan is done
-      this._syncAllPeers();
+      this._engineStarted = true;
+      // Try once immediately; if a folder's scan hasn't persisted the marker
+      // yet (very unlikely — start() awaits each fullScan), the poll catches it.
+      if (!reevaluateReady()) {
+        this._engineReadyPoll = setInterval(reevaluateReady, 2000);
+      }
     }).catch(err => {
       console.error('Engine start failed:', err.message);
     });
@@ -451,15 +517,25 @@ class CarbonSyncDevice extends EventEmitter {
     this.transport.on('client-connected', (c) => {
       console.log(`Client connected: ${c.deviceName}`);
 
-      // Phase 3 P0: seed per-peer last-known-state for this inbound peer if
-      // we've never recorded any state for them before. Without this the
-      // guard would preserve EVERY proposed deletion on installs that
-      // pre-date this feature, which would silently break deletion sync.
-      try {
-        const peerId = this._peerIdForClient(c);
-        if (peerId) this._maybeSeedPeerKnown(peerId, c.deviceName || c.ip);
-      } catch (err) {
-        console.warn(`Seed peer-known on inbound auth failed: ${err.message}`);
+      // Phase 7 P0: defer discovery marking until the initial scan completes.
+      // _maybeSeedPeerKnown iterates engine folders and writes peer_discovery
+      // rows; doing that against a partial scanner index would either skip
+      // folders that haven't loaded yet or write incomplete state. The 15s
+      // quick-sync path's outbound calls also defer until engine ready, so
+      // the seed will happen on the first real exchange after ready flips.
+      if (!this._engineReady) {
+        this._logEngineNotReady(c.deviceName || c.ip || 'inbound-client');
+      } else {
+        // Phase 3 P0: seed per-peer last-known-state for this inbound peer if
+        // we've never recorded any state for them before. Without this the
+        // guard would preserve EVERY proposed deletion on installs that
+        // pre-date this feature, which would silently break deletion sync.
+        try {
+          const peerId = this._peerIdForClient(c);
+          if (peerId) this._maybeSeedPeerKnown(peerId, c.deviceName || c.ip);
+        } catch (err) {
+          console.warn(`Seed peer-known on inbound auth failed: ${err.message}`);
+        }
       }
 
       // Check if this is a known/approved peer
@@ -695,18 +771,35 @@ class CarbonSyncDevice extends EventEmitter {
 
     this.hubConnection.on('authenticated', (msg) => {
       console.log(`Authenticated with hub: ${msg.serverName}`);
+      this.emit('hub-connected', msg);
+      // Phase 7 P0: gate on engine ready. Without the initial scan complete,
+      // _maybeSeedPeerKnown would mark folders discovering against an index
+      // that doesn't yet reflect what we have on disk, and _startDirectionalSync
+      // would push/pull a partial index — peers infer wrong toDelete from gaps.
+      // Defer both: 15s quick-sync re-runs once _engineReady flips true.
+      if (!this._engineReady) {
+        this._logEngineNotReady(msg.serverName || this.config.hubAddress || 'hub');
+        return;
+      }
       // Phase 3 P0: seed per-hub last-known-state on first contact.
       try {
         this._maybeSeedPeerKnown(this._hubPeerId(), msg.serverName || this.config.hubAddress);
       } catch (err) {
         console.warn(`Seed peer-known on hub auth failed: ${err.message}`);
       }
-      this.emit('hub-connected', msg);
       this._startDirectionalSync();
     });
 
     this.hubConnection.on('message', (msg) => {
       if (msg.type === MSG.NOTIFY) {
+        // Phase 7 P0: gate on engine ready. A NOTIFY-driven _pullFolder run
+        // before initial scan completes would compare hub's index against a
+        // partial local one — files we just haven't scanned would land in
+        // toDelete and get trashed. 15s quick-sync re-runs after ready flips.
+        if (!this._engineReady) {
+          this._logEngineNotReady(this.config.hubAddress || 'hub');
+          return;
+        }
         const folderConfig = this.config.folders.find(f => f.name === msg.folder) ||
                              this.config.folders.find(f => f.name?.toLowerCase() === msg.folder?.toLowerCase());
         if (folderConfig && (folderConfig.direction === 'receive' || folderConfig.direction === 'both')) {
@@ -816,6 +909,24 @@ class CarbonSyncDevice extends EventEmitter {
         console.log(`Connected to peer: ${peerInfo.deviceName} (${key})`);
         this.emit('peer-connected', { ip, port, deviceName: peerInfo.deviceName });
 
+        // Folder list is metadata only (no scanner reads beyond getFileCount);
+        // safe to send even before engine is ready so the peer's UI populates.
+        const myFolders = this.config.folders.filter(f => f.enabled && !f.internal).map(f => ({
+          id: f.id, name: f.name, fileCount: this.engine?.folders.get(f.name)?.scanner.getFileCount() || 0,
+          direction: f.direction || 'both',
+        }));
+        writeFrame(client.socket, { type: MSG.FOLDER_LIST, folders: myFolders });
+
+        // Phase 7 P0: gate seeding + sync on engine ready. Marking discovery
+        // and running _syncWithPeer against a partial scanner index would let
+        // gaps in our file list be interpreted by the peer as deletions. The
+        // 15s _quickSyncAllPeers loop will pick this peer up after ready flips.
+        if (!this._engineReady) {
+          this._logEngineNotReady(peerInfo.deviceName || ip);
+          resolve({ success: true, deviceName: peerInfo.deviceName });
+          return;
+        }
+
         // Seed per-peer last-known-state on first contact (Phase 3 P0 upgrade
         // path) so the stale-peer guard doesn't preserve every existing file
         // forever on installs that pre-date this feature.
@@ -826,13 +937,6 @@ class CarbonSyncDevice extends EventEmitter {
           console.warn(`Seed peer-known on outbound auth failed: ${err.message}`);
         }
 
-        // Send our folder list to the peer
-        const myFolders = this.config.folders.filter(f => f.enabled && !f.internal).map(f => ({
-          id: f.id, name: f.name, fileCount: this.engine?.folders.get(f.name)?.scanner.getFileCount() || 0,
-          direction: f.direction || 'both',
-        }));
-        writeFrame(client.socket, { type: MSG.FOLDER_LIST, folders: myFolders });
-
         // Start syncing all folders with this peer
         this._syncWithPeer(peerInfo);
         resolve({ success: true, deviceName: peerInfo.deviceName });
@@ -840,6 +944,14 @@ class CarbonSyncDevice extends EventEmitter {
 
       client.on('message', (msg) => {
         if (msg.type === MSG.NOTIFY) {
+          // Phase 7 P0: gate on engine ready. _pullFolderFromPeer with a
+          // partial local index would treat unscanned-yet files as missing,
+          // and the peer's diff would land them in toDelete. 15s quick-sync
+          // re-runs once _engineReady flips true.
+          if (!this._engineReady) {
+            this._logEngineNotReady(peerInfo.deviceName || ip);
+            return;
+          }
           // Peer has changes — re-sync that folder
           const folderConfig = this.config.folders.find(f => f.name === msg.folder) ||
                                this.config.folders.find(f => f.name?.toLowerCase() === msg.folder?.toLowerCase());
@@ -924,9 +1036,20 @@ class CarbonSyncDevice extends EventEmitter {
       console.log(`Push to ${peerInfo.deviceName} skipped: not authenticated`);
       return;
     }
+    // Phase 7 P0: defense in depth — never push a partial index. If the peer
+    // sees gaps in our index, they'll think we deleted those files locally.
+    if (!this._engineReady) {
+      this._logEngineNotReady(peerInfo.deviceName || peerInfo.ip || 'peer');
+      return;
+    }
     const engineFolder = this._findEngineFolder(folder.name);
     if (!engineFolder) {
       console.log(`Push to ${peerInfo.deviceName} skipped: engine folder '${folder.name}' not found (engine has: ${this.engine?.getFolderNames().join(', ')})`);
+      return;
+    }
+    if (typeof engineFolder.scanner.isInitialScanComplete === 'function' &&
+        !engineFolder.scanner.isInitialScanComplete()) {
+      this._logEngineNotReady(peerInfo.deviceName || peerInfo.ip || 'peer');
       return;
     }
 
@@ -1051,9 +1174,25 @@ class CarbonSyncDevice extends EventEmitter {
    */
   async _pullFolderFromPeer(peerInfo, folder, _retryCount = 0) {
     if (!peerInfo.client?.authenticated) return;
+    // Phase 7 P0: defense in depth. Inbound NOTIFY/auth handlers already gate
+    // on _engineReady, but this function is also reachable from queue drains
+    // and explicit syncFolder() calls — never let it run before the index is
+    // complete. The 15s quick-sync re-runs after _engineReady flips true.
+    if (!this._engineReady) {
+      this._logEngineNotReady(peerInfo.deviceName || peerInfo.ip || 'peer');
+      return;
+    }
     if (!this.engine?.folders.has(folder.name)) return;
 
     const scanner = this.engine.folders.get(folder.name).scanner;
+    // Per-folder defense: a folder added late or with a failed initial scan
+    // would otherwise present a partial index to the peer (whose diff would
+    // then place real local files into toDelete).
+    if (typeof scanner.isInitialScanComplete === 'function' &&
+        !scanner.isInitialScanComplete()) {
+      this._logEngineNotReady(peerInfo.deviceName || peerInfo.ip || 'peer');
+      return;
+    }
     const localIndex = scanner.getIndex();
 
     let response;
@@ -1315,9 +1454,19 @@ class CarbonSyncDevice extends EventEmitter {
 
   async _pullFolder(folder, _retryCount = 0) {
     if (!this.hubConnection?.authenticated) return;
+    // Phase 7 P0: defense in depth — see _pullFolderFromPeer.
+    if (!this._engineReady) {
+      this._logEngineNotReady(this.config.hubAddress || 'hub');
+      return;
+    }
     if (!this.engine?.folders.has(folder.name)) return;
 
     const scanner = this.engine.folders.get(folder.name).scanner;
+    if (typeof scanner.isInitialScanComplete === 'function' &&
+        !scanner.isInitialScanComplete()) {
+      this._logEngineNotReady(this.config.hubAddress || 'hub');
+      return;
+    }
     const localIndex = scanner.getIndex();
 
     const response = await this.hubConnection.request({
@@ -1599,9 +1748,19 @@ class CarbonSyncDevice extends EventEmitter {
    */
   async _pushFullFolder(folder) {
     if (!this.hubConnection?.authenticated) return;
+    // Phase 7 P0: defense in depth — see _pushFullFolderToPeer.
+    if (!this._engineReady) {
+      this._logEngineNotReady(this.config.hubAddress || 'hub');
+      return;
+    }
     if (!this.engine?.folders.has(folder.name)) return;
 
     const scanner = this.engine.folders.get(folder.name).scanner;
+    if (typeof scanner.isInitialScanComplete === 'function' &&
+        !scanner.isInitialScanComplete()) {
+      this._logEngineNotReady(this.config.hubAddress || 'hub');
+      return;
+    }
     const localIndex = scanner.getIndex();
 
     const response = await this.hubConnection.request({
@@ -2047,9 +2206,30 @@ class CarbonSyncDevice extends EventEmitter {
   }
 
   _handlePushIndex(client, msg) {
+    // Phase 7 P0: gate on engine ready. Computing the diff against a partial
+    // local index sends back a `toDelete` list of files we just haven't
+    // scanned yet — the peer would interpret that as authoritative and
+    // delete real files. Reply with ERROR so the peer's existing retry/
+    // backoff path (already used for "stale" errors) re-issues the request
+    // once we're ready; the peer's 15s quick-sync also covers the gap.
+    if (!this._engineReady) {
+      this._logEngineNotReady(client.deviceName || client.ip || 'inbound-client');
+      writeFrame(client.socket, { type: MSG.ERROR, message: 'Index stale', _requestId: msg._requestId });
+      return;
+    }
     const folder = this._findEngineFolder(msg.folder);
     if (!folder) {
       writeFrame(client.socket, { type: MSG.ERROR, message: 'Unknown folder', _requestId: msg._requestId });
+      return;
+    }
+
+    // Per-folder defense in depth: even if the engine reports ready, a
+    // folder added late or that failed its initial scan must not contribute
+    // a partial index to the peer's diff.
+    if (typeof folder.scanner.isInitialScanComplete === 'function' &&
+        !folder.scanner.isInitialScanComplete()) {
+      this._logEngineNotReady(client.deviceName || client.ip || 'inbound-client');
+      writeFrame(client.socket, { type: MSG.ERROR, message: 'Index stale', _requestId: msg._requestId });
       return;
     }
 
@@ -2107,9 +2287,27 @@ class CarbonSyncDevice extends EventEmitter {
   // ---- Existing handlers (from server.js) ----
 
   async _handleIndexRequest(client, msg) {
+    // Phase 7 P0: gate on engine ready. Returning our index (or a diff
+    // computed against it) before the initial scan completes leaks a
+    // partial picture to the peer, who would compute deletions against
+    // gaps and act on them. Reply 'Index stale' which the peer's existing
+    // retry-with-backoff path already handles.
+    if (!this._engineReady) {
+      this._logEngineNotReady(client.deviceName || client.ip || 'inbound-client');
+      writeFrame(client.socket, { type: MSG.ERROR, message: 'Index stale', _requestId: msg._requestId });
+      return;
+    }
     const folder = this._findEngineFolder(msg.folder);
     if (!folder) {
       writeFrame(client.socket, { type: MSG.ERROR, message: 'Unknown folder', _requestId: msg._requestId });
+      return;
+    }
+
+    // Per-folder defense in depth — see _handlePushIndex.
+    if (typeof folder.scanner.isInitialScanComplete === 'function' &&
+        !folder.scanner.isInitialScanComplete()) {
+      this._logEngineNotReady(client.deviceName || client.ip || 'inbound-client');
+      writeFrame(client.socket, { type: MSG.ERROR, message: 'Index stale', _requestId: msg._requestId });
       return;
     }
 
@@ -2553,6 +2751,7 @@ class CarbonSyncDevice extends EventEmitter {
     if (this._quickSyncInterval) { clearInterval(this._quickSyncInterval); this._quickSyncInterval = null; }
     if (this._periodicSyncInterval) { clearInterval(this._periodicSyncInterval); this._periodicSyncInterval = null; }
     if (this._trashPruneInterval) { clearInterval(this._trashPruneInterval); this._trashPruneInterval = null; }
+    if (this._engineReadyPoll) { clearInterval(this._engineReadyPoll); this._engineReadyPoll = null; }
     for (const [, timer] of this._pushTimers) clearTimeout(timer);
     this._pushTimers.clear();
     if (this._httpServer) { this._httpServer.close(); this._httpServer = null; }
