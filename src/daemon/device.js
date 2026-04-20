@@ -29,6 +29,7 @@ const { GameSaveManager } = require('./game-save-manager');
 const { moveToTrash, pruneTrash } = require('./trash');
 const { evaluateDeletion, getThresholds, BLOCKED_LOG_MESSAGE } = require('./deletion-guard');
 const { classifyDeletion, classifyDeletionBatch, evaluateDeletionWithDiscovery } = require('./stale-peer-guard');
+const { classifyOverwrite, getShrinkThreshold, SHRINK_BLOCKED_LOG_MESSAGE } = require('./shrink-guard');
 
 const MAX_CONCURRENT_PUSHES = 4;
 const PUSH_DEBOUNCE_MS = 500;
@@ -58,6 +59,10 @@ class CarbonSyncDevice extends EventEmitter {
     // Capped ring of deletions preserved by the stale-peer guard (Phase 3 P0).
     // Surfaced through GET /preserved-deletions.
     this._preservedDeletions = [];
+    // Capped ring of overwrites blocked by the shrink-guard (Phase 6 P0).
+    // Surfaced through GET /shrink-blocked. Each entry carries the sidecar
+    // path so the operator can recover the incoming bytes if needed.
+    this._shrinkBlocked = [];
     // Tracks per-peer single-file delete bursts so a flood of one-at-a-time
     // deletes still trips the guard. Map<peerName, { count, windowStart }>.
     this._singleDeleteWindows = new Map();
@@ -253,6 +258,92 @@ class CarbonSyncDevice extends EventEmitter {
       reason: guard.reason,
       timestamp: new Date().toISOString(),
     });
+    return false;
+  }
+
+  _recordShrinkBlocked(entry) {
+    this._shrinkBlocked.push(entry);
+    if (this._shrinkBlocked.length > 100) this._shrinkBlocked.shift();
+  }
+
+  /**
+   * Drastic-shrink overwrite guard (Phase 6 P0).
+   *
+   * Called immediately before every sync-driven atomic rename. Stats the
+   * existing file, classifies, and on `preserve` writes the incoming bytes
+   * to a `.shrink-blocked.<peer>.<ts>` sidecar, cleans up the prepared tmp,
+   * logs a SHRINK-BLOCKED line, and returns false so the caller skips the
+   * rename and leaves the existing file untouched.
+   *
+   * @param {object} args
+   * @param {object} args.folderConfig - Folder config record (for shrinkGuard override).
+   * @param {string} args.folderName   - Folder display name (for logs).
+   * @param {string} args.absPath      - Absolute target path.
+   * @param {string} args.relPath      - Path relative to folder root (for logs).
+   * @param {string} args.tmpPath      - Prepared tmp file we'd otherwise rename.
+   * @param {Buffer} args.fileData     - Incoming bytes (used for size + sidecar).
+   * @param {string} args.peerName     - Source peer name (for logs / sidecar name).
+   * @returns {Promise<boolean>} true → caller should proceed with the rename.
+   *                             false → guard tripped, caller must return early.
+   */
+  async _checkShrinkOverwrite({ folderConfig, folderName, absPath, relPath, tmpPath, fileData, peerName }) {
+    const existingStat = await fsp.stat(absPath).catch(() => null);
+    const existingSize = existingStat ? existingStat.size : null;
+    const incomingSize = fileData ? fileData.length : 0;
+
+    const verdict = classifyOverwrite({
+      existingSize,
+      incomingSize,
+      threshold: getShrinkThreshold(folderConfig),
+    });
+
+    if (verdict.action === 'allow') return true;
+
+    // verdict.action === 'preserve'. Save incoming as a sidecar so the user
+    // can compare/recover; leave the existing file intact.
+    const safePeer = String(peerName || 'unknown').replace(/[^A-Za-z0-9._-]/g, '_');
+    const ext = path.extname(absPath);
+    const base = absPath.slice(0, absPath.length - ext.length);
+    const conflictPath = `${base}.shrink-blocked.${safePeer}.${Date.now()}${ext}`;
+
+    try {
+      await fsp.mkdir(path.dirname(conflictPath), { recursive: true });
+      if (fileData) await fsp.writeFile(conflictPath, fileData);
+    } catch (err) {
+      console.warn(`Shrink-guard sidecar write failed [${conflictPath}]: ${err.message}`);
+    }
+
+    // The tmp was already written by the caller (or about to be); regardless,
+    // it must not survive — clean it up so we don't leave orphans.
+    if (tmpPath) {
+      try { await fsp.unlink(tmpPath); } catch {}
+    }
+
+    const line = SHRINK_BLOCKED_LOG_MESSAGE({
+      folderName,
+      relPath,
+      peerName: peerName || 'unknown',
+      existingSize: existingSize == null ? 0 : existingSize,
+      incomingSize,
+      reason: verdict.reason,
+      conflictPath,
+    });
+    console.warn(line);
+    try {
+      fs.appendFileSync(path.join(this.configDir, 'sync.log'), line + '\n');
+    } catch {}
+
+    this._recordShrinkBlocked({
+      folder: folderName,
+      path: relPath,
+      peer: peerName || 'unknown',
+      existingSize: existingSize == null ? 0 : existingSize,
+      incomingSize,
+      reason: verdict.reason,
+      conflictPath,
+      timestamp: new Date().toISOString(),
+    });
+
     return false;
   }
 
@@ -557,6 +648,17 @@ class CarbonSyncDevice extends EventEmitter {
         // which deletions were refused and why. Newest last; capped to 100.
         try {
           res.end(JSON.stringify({ preserved: this._preservedDeletions || [] }));
+        } catch (err) {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ error: err.message }));
+        }
+      } else if (req.url === '/shrink-blocked') {
+        // Phase 6 P0: drastic-shrink overwrites that the guard refused.
+        // Each entry includes the .shrink-blocked sidecar path so the UI
+        // (or operator) can show the user where the incoming bytes went.
+        // Newest last; capped to 100.
+        try {
+          res.end(JSON.stringify({ blocked: this._shrinkBlocked || [] }));
         } catch (err) {
           res.statusCode = 500;
           res.end(JSON.stringify({ error: err.message }));
@@ -1110,6 +1212,23 @@ class CarbonSyncDevice extends EventEmitter {
         throw new Error('Hash mismatch');
       }
 
+      // Phase 6 P0: shrink-guard. Refuse to silently overwrite a substantial
+      // local file with an empty/drastically-shrunk peer copy (corrupted,
+      // partially-written, ransomware, etc.). On preserve the helper writes
+      // the incoming bytes to a .shrink-blocked sidecar and we bail without
+      // renaming — existing file untouched.
+      const folderConfig = this.config.folders.find(f => f.name === folder.name) || folder;
+      const proceed = await this._checkShrinkOverwrite({
+        folderConfig,
+        folderName: folder.name,
+        absPath,
+        relPath: fileInfo.path,
+        tmpPath: null, // tmp not yet written
+        fileData,
+        peerName: peerInfo?.deviceName || 'peer',
+      });
+      if (!proceed) return;
+
       this._markRecentlyWritten(folder.name, fileInfo.path);
       await fsp.writeFile(tmpPath, fileData);
       if (fileInfo.mtime_ms) {
@@ -1361,6 +1480,19 @@ class CarbonSyncDevice extends EventEmitter {
       if (fileInfo.hash && !fileInfo.hash.startsWith('fast:') && hash !== fileInfo.hash) {
         throw new Error(`Hash mismatch`);
       }
+
+      // Phase 6 P0: shrink-guard before atomic rename.
+      const folderConfig = this.config.folders.find(f => f.name === folder.name) || folder;
+      const proceed = await this._checkShrinkOverwrite({
+        folderConfig,
+        folderName: folder.name,
+        absPath,
+        relPath: fileInfo.path,
+        tmpPath: null, // tmp not yet written
+        fileData,
+        peerName: this.config.hubAddress || 'hub',
+      });
+      if (!proceed) return;
 
       this._markRecentlyWritten(folder.name, fileInfo.path);
       await fsp.writeFile(tmpPath, fileData);
@@ -1744,6 +1876,24 @@ class CarbonSyncDevice extends EventEmitter {
     const tmpPath = absPath + '.carbonsync.tmp';
 
     try {
+      // Phase 6 P0: shrink-guard runs FIRST — before the mtime-based
+      // conflict logic — because a peer with a corrupted/truncated copy
+      // may also be the "newer" side by mtime, and we must never let an
+      // empty/drastically-shrunk file overwrite a substantial local one.
+      const folderConfig = this.config.folders.find(f => f.name === pending.folder) ||
+                           this.config.folders.find(f => f.path === folder.path) ||
+                           folder;
+      const proceed = await this._checkShrinkOverwrite({
+        folderConfig,
+        folderName: pending.folder,
+        absPath,
+        relPath: pending.path,
+        tmpPath,
+        fileData,
+        peerName: client.deviceName || 'peer',
+      });
+      if (!proceed) return;
+
       // Conflict check: if hub has a newer version, backup the loser
       const existing = folder.scanner.getFile(pending.path);
       if (existing && existing.hash !== pending.hash) {

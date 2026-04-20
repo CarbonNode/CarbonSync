@@ -129,6 +129,17 @@ class Config {
   // It overrides the deletion-guard defaults for that folder. Missing means
   // defaults (50 files / 25%). See src/daemon/deletion-guard.js. Not migrated
   // — `getThresholds()` falls back so old configs keep working unchanged.
+  //
+  // NOTE: Folder records also support an optional `shrinkGuard` field:
+  //   { absoluteFloor?: number, percentDrop?: number }
+  // It overrides the drastic-shrink overwrite-guard defaults for that
+  // folder. Missing means defaults (1024-byte floor / 0.9 = 90% drop).
+  // See src/daemon/shrink-guard.js for semantics. Below `absoluteFloor`,
+  // existing files are too small to bother protecting. At/above
+  // `percentDrop`, a sync-driven overwrite is refused and the incoming
+  // bytes are stashed as a `.shrink-blocked.<peer>.<ts>` sidecar. Not
+  // migrated — `getShrinkThreshold()` falls back so old configs keep
+  // working unchanged.
   addFolder(folderPath, name, direction, folderId) {
     const resolved = path.resolve(folderPath);
     if (!fs.existsSync(resolved)) {
