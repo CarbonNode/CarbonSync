@@ -1,6 +1,6 @@
 {
   "name": "carbonsync",
-  "version": "2.7.6",
+  "version": "2.7.7",
   "description": "Fast file syncing — hub to devices, zero config",
   "main": "src/daemon/index.js",
   "scripts": {
@@ -8,6 +8,9 @@
     "client": "node src/daemon/index.js client",
     "ui": "electron src/ui/main.js",
     "dev": "electron src/ui/main.js --dev",
+    "rebuild:electron": "electron-rebuild -v 41.1.0 -f -t prod",
+    "rebuild:node": "npm rebuild better-sqlite3 @parcel/watcher",
+    "prebuild": "npx --yes @electron/rebuild -v 41.1.0 -f -t prod",
     "build": "electron-builder",
     "test": "node --test \"test/**/*.test.js\"",
     "recover": "node tools/recover-mod-list.js"
