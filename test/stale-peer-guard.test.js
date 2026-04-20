@@ -217,7 +217,12 @@ test('Scanner peer_state: record / get / clear round-trip', async () => {
   }
 });
 
-test('Scanner seedPeerKnown copies all files into peer_state', async () => {
+test('Scanner seedPeerKnown is a no-op (Phase 5 supersedes optimistic seeding)', async () => {
+  // Phase 5: optimistic seeding defeated the stale-peer guard on the first
+  // sync after upgrade. seedPeerKnown is preserved as a no-op so any caller
+  // (including older test imports) fails safely instead of poisoning
+  // peer_state. Discovery-first sync (markPeerDiscovering / isPeerDiscovered)
+  // takes its place.
   const tmp = await makeTempDir();
   try {
     const dbPath = path.join(tmp, 'index.db');
@@ -225,30 +230,18 @@ test('Scanner seedPeerKnown copies all files into peer_state', async () => {
     await fsp.mkdir(folderPath, { recursive: true });
     await fsp.writeFile(path.join(folderPath, 'a.txt'), 'AAA');
     await fsp.writeFile(path.join(folderPath, 'b.txt'), 'BBBB');
-    await fsp.mkdir(path.join(folderPath, 'sub'), { recursive: true });
-    await fsp.writeFile(path.join(folderPath, 'sub', 'c.txt'), 'CCCCC');
 
     const scanner = new Scanner(folderPath, dbPath);
     try {
-      const stats = await scanner.fullScan({ force: true });
-      assert.ok(stats.added >= 3, `expected >= 3 added, got ${stats.added}`);
-      const fileCount = scanner.getFileCount();
-      assert.equal(fileCount, 3);
+      await scanner.fullScan({ force: true });
+      assert.equal(scanner.getFileCount(), 2);
 
       const peerId = 'peer:host';
       assert.equal(scanner.hasPeerKnown(peerId), false);
       const seeded = scanner.seedPeerKnown(peerId);
-      assert.equal(seeded, 3);
-      assert.equal(scanner.hasPeerKnown(peerId), true);
-
-      // All file paths should now be in peer_state at the same hashes.
-      const map = scanner.getPeerKnownMap(peerId);
-      assert.equal(map.size, 3);
-      for (const f of scanner.getIndex()) {
-        const k = map.get(f.path);
-        assert.ok(k, `peer_state missing ${f.path}`);
-        assert.equal(k.hash, f.hash);
-      }
+      assert.equal(seeded, 0, 'seedPeerKnown must not insert any rows');
+      assert.equal(scanner.hasPeerKnown(peerId), false);
+      assert.equal(scanner.getPeerKnownMap(peerId).size, 0);
     } finally {
       scanner.close();
     }

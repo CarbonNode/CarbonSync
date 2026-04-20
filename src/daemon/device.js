@@ -28,7 +28,7 @@ const { MSG, SYNC_STATE } = require('../shared/protocol');
 const { GameSaveManager } = require('./game-save-manager');
 const { moveToTrash, pruneTrash } = require('./trash');
 const { evaluateDeletion, getThresholds, BLOCKED_LOG_MESSAGE } = require('./deletion-guard');
-const { classifyDeletion, classifyDeletionBatch } = require('./stale-peer-guard');
+const { classifyDeletion, classifyDeletionBatch, evaluateDeletionWithDiscovery } = require('./stale-peer-guard');
 
 const MAX_CONCURRENT_PUSHES = 4;
 const PUSH_DEBOUNCE_MS = 500;
@@ -98,9 +98,24 @@ class CarbonSyncDevice extends EventEmitter {
   }
 
   /**
-   * If the per-folder peer_state table has zero rows for this peer, seed it
-   * optimistically from the current local index. This keeps Phase 3 from
-   * preserving every existing file forever on first run after upgrade.
+   * Phase 5: discovery-first sync — no optimistic seeding.
+   *
+   * Phase 3 (v2.7.0) tried to short-circuit the stale-peer guard on first
+   * contact by INSERTing peer_state rows from the local file index. That
+   * backfired: a stale peer's "delete X" diff would then match the seeded
+   * row and be approved, recreating the original data-loss bug on the very
+   * first sync after upgrade.
+   *
+   * Instead, on first authentication we mark each (folder, peer) pair as
+   * "currently discovering". The deletion path checks this flag and
+   * preserves every proposed deletion (queueing all for push-back) until a
+   * complete clean round-trip in either direction finishes — at which point
+   * markPeerDiscovered() is called and the existing classifyDeletion guard
+   * takes over.
+   *
+   * The function name is preserved so existing call sites and tests don't
+   * need to change.
+   *
    * @param {string} peerId
    * @param {string} peerLabel - For logging (deviceName or hub address).
    */
@@ -110,20 +125,15 @@ class CarbonSyncDevice extends EventEmitter {
       if (!folder.enabled || folder.internal) continue;
       const ef = this._findEngineFolder(folder.name);
       if (!ef) continue;
-      const seedKey = `${peerId}::${folder.name}`;
-      if (this._seededPeers.has(seedKey)) continue;
       try {
-        if (ef.scanner.hasPeerKnown(peerId)) {
-          this._seededPeers.add(seedKey);
-          continue;
+        if (!ef.scanner.hasAnyDiscoveryRecord(peerId)) {
+          ef.scanner.markPeerDiscovering(peerId);
+          const line = `[${new Date().toISOString()}] DISCOVERING: peer=${peerLabel || peerId} folder=${folder.name} — preserving deletions until first round-trip completes`;
+          console.log(line);
+          try { fs.appendFileSync(path.join(this.configDir, 'sync.log'), line + '\n'); } catch {}
         }
-        const seeded = ef.scanner.seedPeerKnown(peerId);
-        this._seededPeers.add(seedKey);
-        const line = `[${new Date().toISOString()}] Seeded peer-known state for peer=${peerLabel || peerId} folder=${folder.name} (${seeded} files)`;
-        console.log(line);
-        try { fs.appendFileSync(path.join(this.configDir, 'sync.log'), line + '\n'); } catch {}
       } catch (err) {
-        console.warn(`Seed peer-known failed [${folder.name}]: ${err.message}`);
+        console.warn(`Mark peer discovering failed [${folder.name}]: ${err.message}`);
       }
     }
   }
@@ -140,6 +150,10 @@ class CarbonSyncDevice extends EventEmitter {
    * Stale-peer guard wrapper. Logs PRESERVED lines, updates the in-memory
    * ring, and queues push-backs. Returns the partition so the caller can
    * apply the surviving deletes.
+   *
+   * Phase 5: routes through evaluateDeletionWithDiscovery, which short-
+   * circuits to "preserve everything" for peers that haven't completed a
+   * full sync round-trip with us yet.
    */
   _applyStalePeerGuard({ scanner, peerId, peerLabel, folderName, paths }) {
     const empty = { delete: [], preserve: [], pushBack: [] };
@@ -154,6 +168,26 @@ class CarbonSyncDevice extends EventEmitter {
         try { fs.appendFileSync(path.join(this.configDir, 'sync.log'), line + '\n'); } catch {}
         this._recordPreservedDeletion({
           folder: folderName, peer: peerLabel || 'unknown',
+          path: e.path, reason: e.reason, timestamp: Date.now(),
+        });
+      }
+      return { delete: [], preserve, pushBack: paths.slice() };
+    }
+
+    // Phase 5: discovery-first short-circuit. If we haven't completed a
+    // round-trip with this peer yet, preserve every deletion and queue all
+    // paths for push-back. Logs use a distinct PRESERVED-DISCOVERY tag so
+    // operators can tell first-sync caution apart from genuine guard hits.
+    const isDiscovering = typeof scanner.isPeerDiscovered === 'function' &&
+                          !scanner.isPeerDiscovered(peerId);
+    if (isDiscovering) {
+      const preserve = paths.map(p => ({ path: p, reason: 'discovery-first-sync' }));
+      const line = `[${new Date().toISOString()}] PRESERVED-DISCOVERY: ${preserve.length} files for peer=${peerLabel || peerId} folder=${folderName} — first-sync caution`;
+      console.warn(line);
+      try { fs.appendFileSync(path.join(this.configDir, 'sync.log'), line + '\n'); } catch {}
+      for (const e of preserve) {
+        this._recordPreservedDeletion({
+          folder: folderName, peer: peerLabel || peerId,
           path: e.path, reason: e.reason, timestamp: Date.now(),
         });
       }
@@ -835,6 +869,11 @@ class CarbonSyncDevice extends EventEmitter {
 
     if (needed.length === 0) {
       console.log(`${folder.name}: peer ${peerInfo.deviceName} is up to date`);
+      // Phase 5: index exchange succeeded; that alone proves contact, mark
+      // discovery complete so the next pull's diff is trusted.
+      if (peerId && typeof engineFolder.scanner.markPeerDiscovered === 'function') {
+        try { engineFolder.scanner.markPeerDiscovered(peerId); } catch {}
+      }
       return;
     }
 
@@ -893,6 +932,13 @@ class CarbonSyncDevice extends EventEmitter {
       } catch (err) {
         console.error(`Push file failed [${relPath}]: ${err.message}`);
       }
+    }
+
+    // Phase 5: a successful full push completes discovery for this folder/peer
+    // — even if `needed` was empty (peer already had everything), the index
+    // exchange itself is enough proof of contact.
+    if (peerId && typeof engineFolder.scanner.markPeerDiscovered === 'function') {
+      try { engineFolder.scanner.markPeerDiscovered(peerId); } catch {}
     }
 
     console.log(`${folder.name}: push to ${peerInfo.deviceName} complete`);
@@ -1024,6 +1070,13 @@ class CarbonSyncDevice extends EventEmitter {
         }
         if (known.length > 0) scanner.recordPeerKnownBulk(peerId, known);
       } catch {}
+    }
+
+    // Phase 5: a successful pull round-trip means we trust this peer's diffs
+    // from now on. Subsequent syncs use the existing classifyDeletion guard
+    // against per-peer last-known-state instead of preserving everything.
+    if (peerId && typeof scanner.markPeerDiscovered === 'function') {
+      try { scanner.markPeerDiscovered(peerId); } catch {}
     }
   }
 
@@ -1269,6 +1322,11 @@ class CarbonSyncDevice extends EventEmitter {
       } catch {}
     }
 
+    // Phase 5: a successful hub pull completes discovery for this folder/peer.
+    if (peerId && typeof scanner.markPeerDiscovered === 'function') {
+      try { scanner.markPeerDiscovered(peerId); } catch {}
+    }
+
     console.log(`${folder.name}: pull complete`);
   }
 
@@ -1428,8 +1486,14 @@ class CarbonSyncDevice extends EventEmitter {
     const needed = response.needed || [];
     const toDelete = response.toDelete || [];
 
+    const hubPeerId = this._hubPeerId();
+
     if (needed.length === 0 && toDelete.length === 0) {
       console.log(`${folder.name}: in sync (push)`);
+      // Phase 5: index exchange itself proves contact; mark discovered.
+      if (hubPeerId && typeof scanner.markPeerDiscovered === 'function') {
+        try { scanner.markPeerDiscovered(hubPeerId); } catch {}
+      }
       return;
     }
 
@@ -1452,6 +1516,11 @@ class CarbonSyncDevice extends EventEmitter {
           path: relPath,
         }, 10000);
       } catch {}
+    }
+
+    // Phase 5: a successful full push completes discovery for this folder/hub.
+    if (hubPeerId && typeof scanner.markPeerDiscovered === 'function') {
+      try { scanner.markPeerDiscovered(hubPeerId); } catch {}
     }
 
     console.log(`${folder.name}: push complete`);
@@ -1743,6 +1812,23 @@ class CarbonSyncDevice extends EventEmitter {
     // before the threshold check. If the peer never had this file (or has it
     // at a different hash than we do), preserve and log; don't delete.
     const peerId = this._peerIdForClient(client);
+
+    // Phase 5: discovery-first sync. Before we trust this peer's "delete X"
+    // for any file, we need at least one complete round-trip with them. On
+    // first contact, preserve unconditionally and log PRESERVED-DISCOVERY.
+    if (peerId && typeof folder.scanner.isPeerDiscovered === 'function' &&
+        !folder.scanner.isPeerDiscovered(peerId)) {
+      const line = `[${new Date().toISOString()}] PRESERVED-DISCOVERY: ${msg.folder}/${msg.path} — first-sync caution (peer=${peerName})`;
+      console.warn(line);
+      try { fs.appendFileSync(path.join(this.configDir, 'sync.log'), line + '\n'); } catch {}
+      this._recordPreservedDeletion({
+        folder: msg.folder, peer: peerName,
+        path: msg.path, reason: 'discovery-first-sync', timestamp: Date.now(),
+      });
+      writeFrame(client.socket, { type: MSG.FILE_DELETE_ACK, _requestId: msg._requestId });
+      return;
+    }
+
     const localRow = folder.scanner.getFile(msg.path);
     const peerKnown = peerId ? folder.scanner.getPeerKnown(peerId, msg.path) : null;
     const cls = classifyDeletion({

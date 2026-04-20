@@ -122,7 +122,56 @@ function classifyDeletionBatch({ scanner, peerId, paths } = {}) {
   return result;
 }
 
+/**
+ * Discovery-aware deletion evaluation (Phase 5).
+ *
+ * Wraps classifyDeletionBatch with a "discovery-first sync" gate: if we have
+ * never completed a full clean sync round-trip with this peer (folder-scoped),
+ * preserve EVERY proposed deletion regardless of peer_state contents. This is
+ * the post-Phase-3 fix for the seeding regression: even if peer_state happens
+ * to "agree" with the peer's diff, on the very first contact we treat the
+ * peer's index as untrusted and push our state instead.
+ *
+ * Discovery completes when either side finishes a successful push or pull;
+ * the caller is responsible for invoking `scanner.markPeerDiscovered(peerId)`
+ * at that point.
+ *
+ * @param {object} args
+ * @param {object} args.scanner - A Scanner instance (per-folder).
+ * @param {string} args.peerId  - Stable peer identifier.
+ * @param {string[]} args.paths - Paths the peer says to delete.
+ * @returns {{
+ *   delete: string[],
+ *   preserve: Array<{ path: string, reason: string }>,
+ *   pushBack: string[]
+ * }}
+ *   When discovering: delete=[], preserve=all-paths-as-discovery-first-sync,
+ *   pushBack=all-paths.
+ *   When discovered: delegates to classifyDeletionBatch.
+ */
+function evaluateDeletionWithDiscovery({ scanner, peerId, paths } = {}) {
+  const empty = { delete: [], preserve: [], pushBack: [] };
+  if (!scanner || !peerId || !Array.isArray(paths) || paths.length === 0) {
+    return empty;
+  }
+
+  // First contact: preserve everything. We don't trust the peer's diff yet.
+  // The push-back queue will send our full state, and the success of either
+  // direction's transfer marks discovery complete (so the next diff is real).
+  if (typeof scanner.isPeerDiscovered === 'function' &&
+      !scanner.isPeerDiscovered(peerId)) {
+    return {
+      delete: [],
+      preserve: paths.map(p => ({ path: p, reason: 'discovery-first-sync' })),
+      pushBack: paths.slice(),
+    };
+  }
+
+  return classifyDeletionBatch({ scanner, peerId, paths });
+}
+
 module.exports = {
   classifyDeletion,
   classifyDeletionBatch,
+  evaluateDeletionWithDiscovery,
 };

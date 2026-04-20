@@ -52,7 +52,29 @@ class Scanner {
         PRIMARY KEY (peer_id, path)
       );
       CREATE INDEX IF NOT EXISTS idx_peer_state_peer ON peer_state(peer_id);
+      CREATE TABLE IF NOT EXISTS peer_discovery (
+        peer_id TEXT PRIMARY KEY,
+        discovered_at INTEGER
+      );
     `);
+
+    // Phase 5: one-time migration. v2.7.0 (Phase 3) optimistically seeded
+    // peer_state on first authentication, claiming the peer knew every local
+    // file at our current hash. That defeats the stale-peer guard exactly in
+    // the scenario the bug occurs in. Since we can't tell which seeded entries
+    // are legitimate vs. optimistic, wipe peer_state on upgrade and let the
+    // discovery-first-sync path re-populate it from real traffic.
+    try {
+      const marker = this.db.prepare("SELECT value FROM meta WHERE key = ?").get('peer_state_migrated_v5');
+      if (!marker) {
+        this.db.exec('DELETE FROM peer_state');
+        this.db.exec('DELETE FROM peer_discovery');
+        this.db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)')
+          .run('peer_state_migrated_v5', '1');
+      }
+    } catch (err) {
+      console.warn(`Phase 5 peer_state migration failed: ${err.message}`);
+    }
 
     this._stmtUpsert = this.db.prepare(`
       INSERT INTO files (path, size, mtime_ms, hash, scanned_at)
@@ -90,6 +112,17 @@ class Scanner {
     );
     this._stmtPeerCountForPeer = this.db.prepare(
       'SELECT COUNT(*) AS count FROM peer_state WHERE peer_id = ? LIMIT 1'
+    );
+
+    // ---- peer_discovery: discovery-first sync (Phase 5 P0 fix) ----
+    this._stmtDiscoveryGet = this.db.prepare(
+      'SELECT discovered_at FROM peer_discovery WHERE peer_id = ?'
+    );
+    this._stmtDiscoveryInsertIgnore = this.db.prepare(
+      'INSERT OR IGNORE INTO peer_discovery (peer_id, discovered_at) VALUES (?, NULL)'
+    );
+    this._stmtDiscoveryMarkComplete = this.db.prepare(
+      'UPDATE peer_discovery SET discovered_at = ? WHERE peer_id = ? AND discovered_at IS NULL'
     );
   }
 
@@ -174,23 +207,61 @@ class Scanner {
   }
 
   /**
-   * Optimistically seed peer-known state from the current local index.
-   * Called the first time we ever talk to a peer post-upgrade so the guard
-   * doesn't preserve everything until natural traffic populates the table.
+   * @deprecated Phase 5 supersedes optimistic seeding with the discovery-first
+   * sync model (see markPeerDiscovering / isPeerDiscovered below). Seeding
+   * peer_state from the current local index defeats the stale-peer guard on
+   * the very first sync after upgrade — exactly the scenario the bug occurs
+   * in. The function is kept as a no-op so any caller that still imports it
+   * fails safely. Returns 0 to signal "no rows seeded".
    */
-  seedPeerKnown(peerId) {
-    if (!peerId) return 0;
-    const now = Date.now();
-    const tx = this.db.transaction(() => {
-      // Single SQL is faster than iterating in JS, and atomic.
-      const stmt = this.db.prepare(`
-        INSERT OR REPLACE INTO peer_state (peer_id, path, hash, synced_at)
-        SELECT ?, path, hash, ? FROM files
-      `);
-      const info = stmt.run(peerId, now);
-      return info.changes;
-    });
-    return tx();
+  seedPeerKnown(_peerId) {
+    return 0;
+  }
+
+  // ---- Phase 5: discovery-first-sync ----
+
+  /**
+   * Mark the (this folder, peerId) pair as "currently discovering". Idempotent:
+   * if a row already exists (whether discovered or still discovering), this is
+   * a no-op — discovery never resets back to NULL once complete.
+   * @param {string} peerId
+   */
+  markPeerDiscovering(peerId) {
+    if (!peerId) return;
+    this._stmtDiscoveryInsertIgnore.run(peerId);
+  }
+
+  /**
+   * Mark discovery complete for (this folder, peerId). Called after the first
+   * complete clean round-trip (push or pull). Only updates rows whose
+   * discovered_at IS NULL, so calling this multiple times is harmless and
+   * preserves the original timestamp.
+   */
+  markPeerDiscovered(peerId) {
+    if (!peerId) return;
+    this._stmtDiscoveryMarkComplete.run(Date.now(), peerId);
+  }
+
+  /**
+   * @returns {boolean} true if this peer has completed discovery for this
+   * folder (row exists AND discovered_at IS NOT NULL). False until the first
+   * round-trip finishes — callers use this to gate destructive deletion logic.
+   */
+  isPeerDiscovered(peerId) {
+    if (!peerId) return false;
+    const row = this._stmtDiscoveryGet.get(peerId);
+    return !!(row && row.discovered_at != null);
+  }
+
+  /**
+   * @returns {boolean} true if there is ANY peer_discovery row for this peer
+   * (whether still discovering or discovered). Used to decide whether the
+   * "first contact" code path needs to insert a discovering row.
+   */
+  hasAnyDiscoveryRecord(peerId) {
+    if (!peerId) return false;
+    const row = this._stmtDiscoveryGet.get(peerId);
+    return !!row;
   }
 
   /**
