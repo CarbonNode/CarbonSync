@@ -84,6 +84,7 @@ class CarbonSyncServer extends EventEmitter {
       apiKey: this.config.apiKey,
       tlsKey: certs.key,
       tlsCert: certs.cert,
+      deviceId: this.config.deviceId,
     });
 
     this.transport.on('client-connected', (c) => {

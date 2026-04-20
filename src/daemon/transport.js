@@ -144,6 +144,7 @@ class SyncServer extends EventEmitter {
     this.apiKey = opts.apiKey;
     this.tlsKey = opts.tlsKey || null;   // PEM key buffer
     this.tlsCert = opts.tlsCert || null;  // PEM cert buffer
+    this.deviceId = opts.deviceId || ''; // Sent to peers in WELCOME for stable identity
     this.server = null;
     this.clients = new Map();
     this._nextId = 0;
@@ -260,6 +261,7 @@ class SyncServer extends EventEmitter {
       type: MSG.WELCOME,
       version: PROTOCOL_VERSION,
       serverName: require('os').hostname(),
+      deviceId: this.deviceId || '',
     });
     console.log(`Client authenticated: ${msg.deviceName} (${msg.deviceId})`);
     this.emit('client-connected', client);

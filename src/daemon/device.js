@@ -28,6 +28,7 @@ const { MSG, SYNC_STATE } = require('../shared/protocol');
 const { GameSaveManager } = require('./game-save-manager');
 const { moveToTrash, pruneTrash } = require('./trash');
 const { evaluateDeletion, getThresholds, BLOCKED_LOG_MESSAGE } = require('./deletion-guard');
+const { classifyDeletion, classifyDeletionBatch } = require('./stale-peer-guard');
 
 const MAX_CONCURRENT_PUSHES = 4;
 const PUSH_DEBOUNCE_MS = 500;
@@ -54,9 +55,122 @@ class CarbonSyncDevice extends EventEmitter {
     // Capped ring of recent deletion-guard rejections (Phase 2 P0 fix).
     // Surfaced through GET /blocked-deletions for the UI banner.
     this._blockedDeletions = [];
+    // Capped ring of deletions preserved by the stale-peer guard (Phase 3 P0).
+    // Surfaced through GET /preserved-deletions.
+    this._preservedDeletions = [];
     // Tracks per-peer single-file delete bursts so a flood of one-at-a-time
     // deletes still trips the guard. Map<peerName, { count, windowStart }>.
     this._singleDeleteWindows = new Map();
+    // Tracks which (peerId, folderName) pairs have been seeded for upgrades
+    // so we don't re-seed on every reconnect. Process-lifetime memory is
+    // sufficient because hasPeerKnown() short-circuits on subsequent runs.
+    this._seededPeers = new Set();
+  }
+
+  /**
+   * Stable peer identifier for the per-peer last-known-state table.
+   * Names can change; we use a 'peer:' prefix + the peer's reported deviceName
+   * (which is the OS hostname returned by WELCOME). For the hub, see
+   * _hubPeerId below. Both prefixes are namespaced so a hostname collision
+   * with a hub address can't happen.
+   */
+  _peerIdFor(peerInfo) {
+    if (!peerInfo) return null;
+    if (peerInfo.deviceId) return `peer:${peerInfo.deviceId}`;
+    if (peerInfo.deviceName) return `peer:${peerInfo.deviceName}`;
+    if (peerInfo.ip && peerInfo.port) return `peer:${peerInfo.ip}:${peerInfo.port}`;
+    return null;
+  }
+
+  _hubPeerId() {
+    return `hub:${this.config.hubAddress || 'hub'}`;
+  }
+
+  /**
+   * Stable peer id for an inbound client connection (used in handlers).
+   */
+  _peerIdForClient(client) {
+    if (!client) return null;
+    if (client.deviceId) return `peer:${client.deviceId}`;
+    if (client.deviceName) return `peer:${client.deviceName}`;
+    if (client.ip) return `peer:${client.ip}`;
+    return null;
+  }
+
+  /**
+   * If the per-folder peer_state table has zero rows for this peer, seed it
+   * optimistically from the current local index. This keeps Phase 3 from
+   * preserving every existing file forever on first run after upgrade.
+   * @param {string} peerId
+   * @param {string} peerLabel - For logging (deviceName or hub address).
+   */
+  _maybeSeedPeerKnown(peerId, peerLabel) {
+    if (!peerId || !this.engine) return;
+    for (const folder of this.config.folders) {
+      if (!folder.enabled || folder.internal) continue;
+      const ef = this._findEngineFolder(folder.name);
+      if (!ef) continue;
+      const seedKey = `${peerId}::${folder.name}`;
+      if (this._seededPeers.has(seedKey)) continue;
+      try {
+        if (ef.scanner.hasPeerKnown(peerId)) {
+          this._seededPeers.add(seedKey);
+          continue;
+        }
+        const seeded = ef.scanner.seedPeerKnown(peerId);
+        this._seededPeers.add(seedKey);
+        const line = `[${new Date().toISOString()}] Seeded peer-known state for peer=${peerLabel || peerId} folder=${folder.name} (${seeded} files)`;
+        console.log(line);
+        try { fs.appendFileSync(path.join(this.configDir, 'sync.log'), line + '\n'); } catch {}
+      } catch (err) {
+        console.warn(`Seed peer-known failed [${folder.name}]: ${err.message}`);
+      }
+    }
+  }
+
+  /**
+   * Append a stale-peer-guard preservation record. Capped at 100 entries.
+   */
+  _recordPreservedDeletion(entry) {
+    this._preservedDeletions.push(entry);
+    if (this._preservedDeletions.length > 100) this._preservedDeletions.shift();
+  }
+
+  /**
+   * Stale-peer guard wrapper. Logs PRESERVED lines, updates the in-memory
+   * ring, and queues push-backs. Returns the partition so the caller can
+   * apply the surviving deletes.
+   */
+  _applyStalePeerGuard({ scanner, peerId, peerLabel, folderName, paths }) {
+    const empty = { delete: [], preserve: [], pushBack: [] };
+    if (!paths || paths.length === 0) return empty;
+    if (!scanner || !peerId) {
+      // Without a peer identity we have no last-known-state to consult. Be
+      // conservative: preserve everything and push back.
+      const preserve = paths.map(p => ({ path: p, reason: 'no-peer-identity' }));
+      for (const e of preserve) {
+        const line = `[${new Date().toISOString()}] PRESERVED: ${folderName}/${e.path} — ${e.reason} (peer=${peerLabel || 'unknown'})`;
+        console.warn(line);
+        try { fs.appendFileSync(path.join(this.configDir, 'sync.log'), line + '\n'); } catch {}
+        this._recordPreservedDeletion({
+          folder: folderName, peer: peerLabel || 'unknown',
+          path: e.path, reason: e.reason, timestamp: Date.now(),
+        });
+      }
+      return { delete: [], preserve, pushBack: paths.slice() };
+    }
+
+    const result = classifyDeletionBatch({ scanner, peerId, paths });
+    for (const e of result.preserve) {
+      const line = `[${new Date().toISOString()}] PRESERVED: ${folderName}/${e.path} — ${e.reason} (peer=${peerLabel || peerId})`;
+      console.warn(line);
+      try { fs.appendFileSync(path.join(this.configDir, 'sync.log'), line + '\n'); } catch {}
+      this._recordPreservedDeletion({
+        folder: folderName, peer: peerLabel || peerId,
+        path: e.path, reason: e.reason, timestamp: Date.now(),
+      });
+    }
+    return result;
   }
 
   /**
@@ -206,10 +320,22 @@ class CarbonSyncDevice extends EventEmitter {
       apiKey: this.config.apiKey,
       tlsKey: certs.key,
       tlsCert: certs.cert,
+      deviceId: this.config.deviceId,
     });
 
     this.transport.on('client-connected', (c) => {
       console.log(`Client connected: ${c.deviceName}`);
+
+      // Phase 3 P0: seed per-peer last-known-state for this inbound peer if
+      // we've never recorded any state for them before. Without this the
+      // guard would preserve EVERY proposed deletion on installs that
+      // pre-date this feature, which would silently break deletion sync.
+      try {
+        const peerId = this._peerIdForClient(c);
+        if (peerId) this._maybeSeedPeerKnown(peerId, c.deviceName || c.ip);
+      } catch (err) {
+        console.warn(`Seed peer-known on inbound auth failed: ${err.message}`);
+      }
 
       // Check if this is a known/approved peer
       const savedPeers = this.config.data.savedPeers || [];
@@ -392,6 +518,15 @@ class CarbonSyncDevice extends EventEmitter {
           res.statusCode = 500;
           res.end(JSON.stringify({ error: err.message }));
         }
+      } else if (req.url === '/preserved-deletions') {
+        // Phase 3 P0: stale-peer-guard preservations so the UI can show
+        // which deletions were refused and why. Newest last; capped to 100.
+        try {
+          res.end(JSON.stringify({ preserved: this._preservedDeletions || [] }));
+        } catch (err) {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ error: err.message }));
+        }
       } else {
         res.statusCode = 404;
         res.end(JSON.stringify({ error: 'Not found. Use /status or /health' }));
@@ -424,6 +559,12 @@ class CarbonSyncDevice extends EventEmitter {
 
     this.hubConnection.on('authenticated', (msg) => {
       console.log(`Authenticated with hub: ${msg.serverName}`);
+      // Phase 3 P0: seed per-hub last-known-state on first contact.
+      try {
+        this._maybeSeedPeerKnown(this._hubPeerId(), msg.serverName || this.config.hubAddress);
+      } catch (err) {
+        console.warn(`Seed peer-known on hub auth failed: ${err.message}`);
+      }
       this.emit('hub-connected', msg);
       this._startDirectionalSync();
     });
@@ -534,9 +675,20 @@ class CarbonSyncDevice extends EventEmitter {
       client.on('authenticated', async (msg) => {
         clearTimeout(timeout);
         peerInfo.deviceName = msg.serverName || ip;
+        if (msg.deviceId) peerInfo.deviceId = msg.deviceId;
         peerInfo.connected = true;
         console.log(`Connected to peer: ${peerInfo.deviceName} (${key})`);
         this.emit('peer-connected', { ip, port, deviceName: peerInfo.deviceName });
+
+        // Seed per-peer last-known-state on first contact (Phase 3 P0 upgrade
+        // path) so the stale-peer guard doesn't preserve every existing file
+        // forever on installs that pre-date this feature.
+        try {
+          const peerId = this._peerIdFor(peerInfo);
+          if (peerId) this._maybeSeedPeerKnown(peerId, peerInfo.deviceName);
+        } catch (err) {
+          console.warn(`Seed peer-known on outbound auth failed: ${err.message}`);
+        }
 
         // Send our folder list to the peer
         const myFolders = this.config.folders.filter(f => f.enabled && !f.internal).map(f => ({
@@ -663,6 +815,24 @@ class CarbonSyncDevice extends EventEmitter {
     }
 
     const needed = response.needed || [];
+
+    // Phase 3: every file in our index that the peer DIDN'T ask for is one
+    // they already have at our hash (PUSH_INDEX diffs by hash). Record those
+    // as peer-known so future deletes can be classified as peer-explicit.
+    const peerId = this._peerIdFor(peerInfo);
+    if (peerId) {
+      try {
+        const neededSet = new Set(needed);
+        const known = [];
+        for (const f of localIndex) {
+          if (neededSet.has(f.path)) continue;
+          if (!f.hash || String(f.hash).startsWith('fast:')) continue;
+          known.push({ path: f.path, hash: f.hash });
+        }
+        if (known.length > 0) engineFolder.scanner.recordPeerKnownBulk(peerId, known);
+      } catch {}
+    }
+
     if (needed.length === 0) {
       console.log(`${folder.name}: peer ${peerInfo.deviceName} is up to date`);
       return;
@@ -697,7 +867,13 @@ class CarbonSyncDevice extends EventEmitter {
           try { fs.appendFileSync(path.join(this.configDir, 'sync.log'), errLog + '\n'); } catch {}
           continue;
         }
-        if (resp.status === 'skip') continue;
+        if (resp.status === 'skip') {
+          // Peer already has it at this hash — record peer-known.
+          if (peerId) {
+            try { engineFolder.scanner.recordPeerKnown(peerId, relPath, hash); } catch {}
+          }
+          continue;
+        }
 
         const header = Buffer.alloc(5);
         header.writeUInt32BE(data.length + 1);
@@ -706,6 +882,11 @@ class CarbonSyncDevice extends EventEmitter {
         writeFrame(peerInfo.client.socket, {
           type: 'transfer_end', folder: folder.name, path: relPath, bytesSent: data.length,
         });
+
+        // Successful push — peer now has this file at this hash.
+        if (peerId) {
+          try { engineFolder.scanner.recordPeerKnown(peerId, relPath, hash); } catch {}
+        }
 
         // Small delay between files to avoid overwhelming
         await new Promise(r => setTimeout(r, 50));
@@ -751,7 +932,8 @@ class CarbonSyncDevice extends EventEmitter {
     }
     if (!response.diff) return;
 
-    const { toDownload = [], toDelete = [], toCopy = [] } = response.diff;
+    const { toDownload = [], toDelete: rawToDelete = [], toCopy = [] } = response.diff;
+    let toDelete = rawToDelete;
     if (toDownload.length === 0 && toDelete.length === 0 && toCopy.length === 0) return;
 
     console.log(`Pull from ${peerInfo.deviceName}: ${folder.name} — ${toDownload.length} download, ${toDelete.length} delete`);
@@ -761,6 +943,25 @@ class CarbonSyncDevice extends EventEmitter {
     // Guard refuses the WHOLE batch if it looks catastrophic. Downloads
     // continue regardless so legit file pushes aren't lost.
     const folderConfig = this.config.folders.find(f => f.name === folder.name) || folder;
+
+    // Stale-peer guard (Phase 3) — classify each proposed deletion against
+    // per-peer last-known-state BEFORE the threshold check. Survivors then
+    // go through the threshold check and into the trash bucket.
+    const peerId = this._peerIdFor(peerInfo);
+    const peerLabel = peerInfo.deviceName || 'peer';
+    const guarded = this._applyStalePeerGuard({
+      scanner, peerId, peerLabel, folderName: folder.name, paths: toDelete,
+    });
+    toDelete = guarded.delete;
+
+    if (guarded.pushBack.length > 0) {
+      // Re-push survivors that we still have but the peer doesn't (or has at
+      // a stale hash). Use the existing per-peer queue so it inherits the
+      // same retry/backoff path as natural change-driven pushes.
+      const changes = guarded.pushBack.map(p => ({ type: 'modify', path: p }));
+      try { this._queuePushToPeer(peerInfo, folder.name, changes); } catch {}
+    }
+
     if (this._checkDeletionAllowed({
       folderConfig,
       folderName: folder.name,
@@ -774,6 +975,11 @@ class CarbonSyncDevice extends EventEmitter {
           this._markRecentlyWritten(folder.name, relPath);
           await moveToTrash(folder.path, relPath, { reason: 'sync-delete' });
           scanner.removeFile(absPath);
+          // Mutually accepted — clear the peer-known entry so we don't
+          // resurrect this deletion on the next compare.
+          if (peerId) {
+            try { scanner.clearPeerKnown(peerId, relPath); } catch {}
+          }
         } catch (err) {
           if (err.code !== 'ENOENT') console.warn(`Delete failed: ${err.message}`);
         }
@@ -784,9 +990,40 @@ class CarbonSyncDevice extends EventEmitter {
     for (const file of toDownload) {
       try {
         await this._downloadFileFromPeer(peerInfo, folder, file, scanner);
+        // Successful download: peer demonstrably has this file at this hash.
+        if (peerId && file.hash && !file.hash.startsWith('fast:')) {
+          try { scanner.recordPeerKnown(peerId, file.path, file.hash); } catch {}
+        }
       } catch (err) {
         console.error(`Download from peer failed [${file.path}]: ${err.message}`);
       }
+    }
+
+    // Local copies (move detection) — peer has the same content, different path.
+    if (peerId) {
+      for (const c of toCopy) {
+        if (c.hash && !c.hash.startsWith('fast:')) {
+          try { scanner.recordPeerKnown(peerId, c.to, c.hash); } catch {}
+        }
+      }
+      // For files we already had matching the peer (not in any of the diff
+      // arrays), record peer-known for our local copy. This catches the
+      // "in sync" baseline so future deletions can be classified peer-explicit.
+      try {
+        const localMap = scanner.getIndexMap();
+        const seen = new Set([
+          ...toDownload.map(f => f.path),
+          ...toCopy.map(c => c.to),
+          ...rawToDelete,
+        ]);
+        const known = [];
+        for (const [p, row] of localMap) {
+          if (seen.has(p)) continue;
+          if (!row.hash || row.hash.startsWith('fast:')) continue;
+          known.push({ path: p, hash: row.hash });
+        }
+        if (known.length > 0) scanner.recordPeerKnownBulk(peerId, known);
+      } catch {}
     }
   }
 
@@ -931,7 +1168,8 @@ class CarbonSyncDevice extends EventEmitter {
     const diff = response.diff;
     if (!diff) return;
 
-    const { toDownload = [], toDelete = [], toCopy = [] } = diff;
+    const { toDownload = [], toDelete: rawToDelete = [], toCopy = [] } = diff;
+    let toDelete = rawToDelete;
 
     if (toDownload.length === 0 && toDelete.length === 0 && toCopy.length === 0) {
       console.log(`${folder.name}: in sync (pull)`);
@@ -944,6 +1182,21 @@ class CarbonSyncDevice extends EventEmitter {
     // and apply the same threshold guard. Hub identified just as 'hub' since
     // we don't track its hostname here.
     const hubPeerName = this.config.hubAddress || 'hub';
+    const peerId = this._hubPeerId();
+
+    // Stale-peer guard (Phase 3)
+    const guarded = this._applyStalePeerGuard({
+      scanner, peerId, peerLabel: hubPeerName,
+      folderName: folder.name, paths: toDelete,
+    });
+    toDelete = guarded.delete;
+
+    if (guarded.pushBack.length > 0 && this.hubConnection?.authenticated) {
+      // Re-push survivors to the hub via the existing debounced push queue.
+      const changes = guarded.pushBack.map(p => ({ type: 'modify', path: p }));
+      try { this._queuePush(folder.name, changes); } catch {}
+    }
+
     if (this._checkDeletionAllowed({
       folderConfig: folder,
       folderName: folder.name,
@@ -957,6 +1210,9 @@ class CarbonSyncDevice extends EventEmitter {
           this._markRecentlyWritten(folder.name, relPath);
           await moveToTrash(folder.path, relPath, { reason: 'sync-delete' });
           scanner.removeFile(absPath);
+          if (peerId) {
+            try { scanner.clearPeerKnown(peerId, relPath); } catch {}
+          }
         } catch (err) {
           if (err.code !== 'ENOENT') console.warn(`Delete failed [${relPath}]: ${err.message}`);
         }
@@ -972,6 +1228,9 @@ class CarbonSyncDevice extends EventEmitter {
         this._markRecentlyWritten(folder.name, copy.to);
         await fsp.copyFile(fromAbs, toAbs);
         await scanner.updateFile(toAbs);
+        if (peerId && copy.hash && !copy.hash.startsWith('fast:')) {
+          try { scanner.recordPeerKnown(peerId, copy.to, copy.hash); } catch {}
+        }
       } catch {
         toDownload.push({ path: copy.to, size: copy.size, hash: copy.hash, mtime_ms: copy.mtime_ms });
       }
@@ -981,9 +1240,33 @@ class CarbonSyncDevice extends EventEmitter {
     for (const file of toDownload) {
       try {
         await this._downloadFile(folder, file, scanner);
+        if (peerId && file.hash && !file.hash.startsWith('fast:')) {
+          try { scanner.recordPeerKnown(peerId, file.path, file.hash); } catch {}
+        }
       } catch (err) {
         console.error(`Download failed [${file.path}]: ${err.message}`);
       }
+    }
+
+    // "In-sync" baseline: any file we had that wasn't in toDownload/toCopy/
+    // toDelete is presumably also on the hub at the same hash — record so
+    // future deletes can be classified.
+    if (peerId) {
+      try {
+        const localMap = scanner.getIndexMap();
+        const seen = new Set([
+          ...toDownload.map(f => f.path),
+          ...toCopy.map(c => c.to),
+          ...rawToDelete,
+        ]);
+        const known = [];
+        for (const [p, row] of localMap) {
+          if (seen.has(p)) continue;
+          if (!row.hash || row.hash.startsWith('fast:')) continue;
+          known.push({ path: p, hash: row.hash });
+        }
+        if (known.length > 0) scanner.recordPeerKnownBulk(peerId, known);
+      } catch {}
     }
 
     console.log(`${folder.name}: pull complete`);
@@ -1424,6 +1707,13 @@ class CarbonSyncDevice extends EventEmitter {
       await fsp.rename(tmpPath, absPath);
       await folder.scanner.updateFile(absPath);
 
+      // Record peer-known: the sending peer demonstrably has this file at
+      // this hash (they just gave it to us). Phase 3 P0 fix.
+      const peerId = this._peerIdForClient(client);
+      if (peerId && pending.hash && !pending.hash.startsWith('fast:')) {
+        try { folder.scanner.recordPeerKnown(peerId, pending.path, pending.hash); } catch {}
+      }
+
       console.log(`Received push: ${pending.folder}/${pending.path} from ${client.deviceName}`);
 
       // Notify other connected clients (receivers)
@@ -1448,6 +1738,28 @@ class CarbonSyncDevice extends EventEmitter {
 
     const peerName = client.deviceName || client.ip || 'peer';
     const folderConfig = this.config.folders.find(f => f.name === msg.folder) || folder;
+
+    // Stale-peer guard (Phase 3) — classify against per-peer last-known-state
+    // before the threshold check. If the peer never had this file (or has it
+    // at a different hash than we do), preserve and log; don't delete.
+    const peerId = this._peerIdForClient(client);
+    const localRow = folder.scanner.getFile(msg.path);
+    const peerKnown = peerId ? folder.scanner.getPeerKnown(peerId, msg.path) : null;
+    const cls = classifyDeletion({
+      peerKnown,
+      currentLocalHash: localRow ? localRow.hash : null,
+    });
+    if (cls.action === 'preserve') {
+      const line = `[${new Date().toISOString()}] PRESERVED: ${msg.folder}/${msg.path} — ${cls.reason} (peer=${peerName})`;
+      console.warn(line);
+      try { fs.appendFileSync(path.join(this.configDir, 'sync.log'), line + '\n'); } catch {}
+      this._recordPreservedDeletion({
+        folder: msg.folder, peer: peerName,
+        path: msg.path, reason: cls.reason, timestamp: Date.now(),
+      });
+      writeFrame(client.socket, { type: MSG.FILE_DELETE_ACK, _requestId: msg._requestId });
+      return;
+    }
 
     // Single-file path: the per-batch guard would be a no-op here (1 file is
     // always under the 50/25% defaults). Aggregate single-file deletes from
@@ -1483,6 +1795,9 @@ class CarbonSyncDevice extends EventEmitter {
       // a stale view of our state can't silently destroy files here either.
       await moveToTrash(folder.path, msg.path, { reason: 'sync-delete-push' });
       folder.scanner.removeFile(absPath);
+      if (peerId) {
+        try { folder.scanner.clearPeerKnown(peerId, msg.path); } catch {}
+      }
       console.log(`Received delete push: ${msg.folder}/${msg.path}`);
 
       this.transport.broadcast({
@@ -1504,6 +1819,18 @@ class CarbonSyncDevice extends EventEmitter {
 
     const hubIndex = folder.scanner.getIndexMap();
     const clientIndex = msg.index || [];
+
+    // Record peer-known state: every entry in the pushed index is something
+    // the peer demonstrably has at that hash right now. Phase 3 P0 fix.
+    const peerId = this._peerIdForClient(client);
+    if (peerId && clientIndex.length > 0) {
+      const known = clientIndex
+        .filter(e => e && e.path && e.hash && !String(e.hash).startsWith('fast:'))
+        .map(e => ({ path: e.path, hash: e.hash }));
+      if (known.length > 0) {
+        try { folder.scanner.recordPeerKnownBulk(peerId, known); } catch {}
+      }
+    }
 
     // What does the hub need from this device?
     const needed = [];

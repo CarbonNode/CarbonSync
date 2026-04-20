@@ -44,6 +44,14 @@ class Scanner {
         key TEXT PRIMARY KEY,
         value TEXT
       );
+      CREATE TABLE IF NOT EXISTS peer_state (
+        peer_id TEXT NOT NULL,
+        path TEXT NOT NULL,
+        hash TEXT NOT NULL,
+        synced_at INTEGER NOT NULL,
+        PRIMARY KEY (peer_id, path)
+      );
+      CREATE INDEX IF NOT EXISTS idx_peer_state_peer ON peer_state(peer_id);
     `);
 
     this._stmtUpsert = this.db.prepare(`
@@ -62,6 +70,127 @@ class Scanner {
     this._stmtUpsertDir = this.db.prepare('INSERT OR REPLACE INTO dirs (path, scanned_at) VALUES (?, ?)');
     this._stmtAllDirs = this.db.prepare('SELECT path FROM dirs ORDER BY path');
     this._stmtPurgeDirs = this.db.prepare('DELETE FROM dirs WHERE scanned_at < ?');
+
+    // ---- peer_state: per-peer last-known hash for each file (Phase 3 P0 fix) ----
+    this._stmtPeerUpsert = this.db.prepare(`
+      INSERT OR REPLACE INTO peer_state (peer_id, path, hash, synced_at)
+      VALUES (?, ?, ?, ?)
+    `);
+    this._stmtPeerGet = this.db.prepare(
+      'SELECT hash, synced_at FROM peer_state WHERE peer_id = ? AND path = ?'
+    );
+    this._stmtPeerDelete = this.db.prepare(
+      'DELETE FROM peer_state WHERE peer_id = ? AND path = ?'
+    );
+    this._stmtPeerDeleteAll = this.db.prepare(
+      'DELETE FROM peer_state WHERE peer_id = ?'
+    );
+    this._stmtPeerAllForPeer = this.db.prepare(
+      'SELECT path, hash, synced_at FROM peer_state WHERE peer_id = ?'
+    );
+    this._stmtPeerCountForPeer = this.db.prepare(
+      'SELECT COUNT(*) AS count FROM peer_state WHERE peer_id = ? LIMIT 1'
+    );
+  }
+
+  // ---- Per-peer last-known-state API (Phase 3) ----
+
+  /**
+   * Record that a peer is known to have a file at a specific hash.
+   * @param {string} peerId  - Stable peer identifier (e.g. 'peer:HOSTNAME', 'hub:1.2.3.4:21547').
+   * @param {string} relPath - File path relative to folder root.
+   * @param {string} hash    - Content hash the peer has.
+   */
+  recordPeerKnown(peerId, relPath, hash) {
+    if (!peerId || !relPath || !hash) return;
+    this._stmtPeerUpsert.run(peerId, relPath, hash, Date.now());
+  }
+
+  /**
+   * Bulk-record peer-known state. Wrapped in a single transaction.
+   * @param {string} peerId
+   * @param {Array<{path: string, hash: string}>} entries
+   */
+  recordPeerKnownBulk(peerId, entries) {
+    if (!peerId || !Array.isArray(entries) || entries.length === 0) return;
+    const now = Date.now();
+    const tx = this.db.transaction((rows) => {
+      for (const r of rows) {
+        if (!r || !r.path || !r.hash) continue;
+        this._stmtPeerUpsert.run(peerId, r.path, r.hash, now);
+      }
+    });
+    tx(entries);
+  }
+
+  /**
+   * Get the last-known state for a single (peer, path) pair.
+   * @returns {{ hash: string, synced_at: number } | null}
+   */
+  getPeerKnown(peerId, relPath) {
+    if (!peerId || !relPath) return null;
+    const row = this._stmtPeerGet.get(peerId, relPath);
+    return row || null;
+  }
+
+  /**
+   * Forget a single (peer, path) entry. Used when a deletion has been mutually
+   * accepted so we don't keep proposing it back to the peer.
+   */
+  clearPeerKnown(peerId, relPath) {
+    if (!peerId || !relPath) return;
+    this._stmtPeerDelete.run(peerId, relPath);
+  }
+
+  /**
+   * Forget every entry for a peer. Used when a peer is removed from config.
+   */
+  clearPeerAll(peerId) {
+    if (!peerId) return;
+    this._stmtPeerDeleteAll.run(peerId);
+  }
+
+  /**
+   * Snapshot of peer-known state as a Map<path, {hash, synced_at}>.
+   * Used by the stale-peer guard for batch comparison.
+   */
+  getPeerKnownMap(peerId) {
+    const map = new Map();
+    if (!peerId) return map;
+    for (const row of this._stmtPeerAllForPeer.iterate(peerId)) {
+      map.set(row.path, { hash: row.hash, synced_at: row.synced_at });
+    }
+    return map;
+  }
+
+  /**
+   * True if we have any peer_state rows for this peer.
+   * Cheap check used to decide whether to seed on first contact.
+   */
+  hasPeerKnown(peerId) {
+    if (!peerId) return false;
+    const row = this._stmtPeerCountForPeer.get(peerId);
+    return !!(row && row.count > 0);
+  }
+
+  /**
+   * Optimistically seed peer-known state from the current local index.
+   * Called the first time we ever talk to a peer post-upgrade so the guard
+   * doesn't preserve everything until natural traffic populates the table.
+   */
+  seedPeerKnown(peerId) {
+    if (!peerId) return 0;
+    const now = Date.now();
+    const tx = this.db.transaction(() => {
+      // Single SQL is faster than iterating in JS, and atomic.
+      const stmt = this.db.prepare(`
+        INSERT OR REPLACE INTO peer_state (peer_id, path, hash, synced_at)
+        SELECT ?, path, hash, ? FROM files
+      `);
+      const info = stmt.run(peerId, now);
+      return info.changes;
+    });
+    return tx();
   }
 
   /**
