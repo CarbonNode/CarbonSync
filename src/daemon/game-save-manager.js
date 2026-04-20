@@ -166,6 +166,7 @@ class GameSaveManager extends EventEmitter {
     this._running = false;
     if (this._syncCheckInterval) { clearInterval(this._syncCheckInterval); this._syncCheckInterval = null; }
     await this.detector.stop();
+    if (this.backup && typeof this.backup.stop === 'function') this.backup.stop();
     await this._saveLibrary();
   }
 

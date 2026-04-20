@@ -13,6 +13,18 @@ const fsp = require('fs/promises');
 const path = require('path');
 const os = require('os');
 const crypto = require('crypto');
+const { moveToTrash, pruneTrash } = require('./trash');
+
+// Floor for gameSaveMaxVersions — refuse to go below this, no matter what
+// the user configures, to avoid evicting normal backups the moment a
+// pre-restore snapshot is created.
+const MIN_MAX_VERSIONS = 3;
+
+// Keep at most this many pre-restore snapshots regardless of the configured
+// regular retention — they're "oh shit" safety nets, not versioned history.
+const PRE_RESTORE_RETENTION = 3;
+
+const PRE_RESTORE_PREFIX = 'pre-restore-';
 
 class GameBackup {
   /**
@@ -20,11 +32,97 @@ class GameBackup {
    * @param {string} opts.configDir — ~/.carbonsync
    * @param {import('./config').Config} opts.config
    */
-  constructor({ configDir, config }) {
+  constructor({ configDir, config, gameSavesDir }) {
     this.configDir = configDir;
     this.config = config;
-    this.gameSavesDir = path.join(configDir, 'game-saves');
+    // Allow overriding for tests; default to <configDir>/game-saves.
+    this.gameSavesDir = gameSavesDir || path.join(configDir, 'game-saves');
     fs.mkdirSync(this.gameSavesDir, { recursive: true });
+
+    // Kick off a trash prune at startup and every 6h (matches the main
+    // daemon's interval). game-saves is an internal folder that isn't in
+    // config.folders, so the daemon-level _pruneAllTrash doesn't touch it.
+    this._pruneTrash().catch(() => {});
+    this._trashPruneInterval = setInterval(() => {
+      this._pruneTrash().catch(() => {});
+    }, 6 * 60 * 60 * 1000);
+    // Don't keep the process alive just for trash pruning.
+    if (typeof this._trashPruneInterval.unref === 'function') {
+      this._trashPruneInterval.unref();
+    }
+  }
+
+  /**
+   * Stop background intervals. Called on daemon shutdown.
+   */
+  stop() {
+    if (this._trashPruneInterval) {
+      clearInterval(this._trashPruneInterval);
+      this._trashPruneInterval = null;
+    }
+  }
+
+  async _pruneTrash() {
+    try {
+      const removed = await pruneTrash(this.gameSavesDir, { retentionDays: 7 });
+      if (removed > 0) {
+        console.log(`Pruned ${removed} expired trash dir(s) from game-saves`);
+      }
+    } catch (err) {
+      if (err && err.code !== 'ENOENT') {
+        console.warn(`game-saves trash prune failed: ${err.message}`);
+      }
+    }
+  }
+
+  /**
+   * Assert that `dir` is a safe target for rm-rf:
+   *   - dir !== root
+   *   - dir is strictly underneath root (no symlink/.. escape)
+   *   - resolved relative path has no ".." segments
+   * Throws Error on any violation.
+   */
+  _assertSafePath(dir, root) {
+    if (typeof dir !== 'string' || !dir) {
+      throw new Error('unsafe path: empty');
+    }
+    if (typeof root !== 'string' || !root) {
+      throw new Error('unsafe path: empty root');
+    }
+    const absDir = path.resolve(dir);
+    const absRoot = path.resolve(root);
+    if (absDir === absRoot) {
+      throw new Error(`unsafe path: would target root (${absRoot})`);
+    }
+    const prefix = absRoot.endsWith(path.sep) ? absRoot : absRoot + path.sep;
+    if (!absDir.startsWith(prefix)) {
+      throw new Error(`unsafe path: ${absDir} not under ${absRoot}`);
+    }
+    const rel = path.relative(absRoot, absDir);
+    if (!rel || rel.startsWith('..') || rel.split(/[\\/]+/).includes('..')) {
+      throw new Error(`unsafe path: relative ${rel} escapes ${absRoot}`);
+    }
+  }
+
+  /**
+   * Move a path (file OR directory) under gameSavesDir into the trash bucket.
+   * Safe replacement for fsp.rm / fsp.unlink in destructive cleanup code.
+   * Returns true on success, false if skipped/failed.
+   */
+  async _trashWithinGameSaves(fullPath) {
+    try {
+      this._assertSafePath(fullPath, this.gameSavesDir);
+    } catch (err) {
+      console.error(`Refusing trash: ${err.message}`);
+      return false;
+    }
+    const rel = path.relative(this.gameSavesDir, fullPath);
+    try {
+      return await moveToTrash(this.gameSavesDir, rel);
+    } catch (err) {
+      console.warn(`moveToTrash failed for ${rel}: ${err.message}`);
+      return false;
+    }
   }
 
   /**
@@ -312,49 +410,97 @@ class GameBackup {
   }
 
   /**
-   * Enforce retention policy: keep at most N backups,
-   * but always keep at least 1 backup older than 24 hours.
+   * Enforce retention policy.
+   *
+   * - Regular (timestamp-named) backups: keep the newest `maxVersions`
+   *   (by metadata.timestamp, falling back to directory name). Clamp
+   *   maxVersions to >= MIN_MAX_VERSIONS (3) so misconfig can't leave
+   *   a user with just one backup.
+   * - Pre-restore snapshots (`pre-restore-*`): tracked separately and
+   *   capped at PRE_RESTORE_RETENTION (3). They do NOT count against
+   *   the regular retention and cannot evict regular backups.
+   * - Always protect the oldest regular backup that's > 24h old.
+   * - Deletes route through moveToTrash for 7-day recovery.
    */
   async _enforceRetention(backupsDir) {
-    const maxVersions = this.config.data.settings?.gameSaveMaxVersions || 10;
+    const configured = this.config.data.settings?.gameSaveMaxVersions;
+    let maxVersions = Number.isFinite(configured) && configured > 0 ? configured : 10;
+    if (maxVersions < MIN_MAX_VERSIONS) maxVersions = MIN_MAX_VERSIONS;
 
     let entries;
     try {
       entries = await fsp.readdir(backupsDir, { withFileTypes: true });
     } catch { return; }
 
-    // Sort by name (timestamps sort lexicographically)
-    const dirs = entries
-      .filter(e => e.isDirectory() && !e.name.startsWith('.'))
-      .map(e => e.name)
-      .sort();
+    // Gather { name, timestamp, isPreRestore } for each backup dir.
+    const all = [];
+    for (const e of entries) {
+      if (!e.isDirectory() || e.name.startsWith('.')) continue;
+      const name = e.name;
+      const isPreRestore = name.startsWith(PRE_RESTORE_PREFIX);
 
-    if (dirs.length <= maxVersions) return;
-
-    const now = Date.now();
-    const oneDayAgo = now - 24 * 60 * 60 * 1000;
-
-    // Find the oldest backup that's older than 24h
-    let protectedOldBackup = null;
-    for (const dir of dirs) {
+      // Prefer metadata.timestamp (real wall-clock, ISO string).
+      // Fall back to directory name (which also sorts correctly for
+      // pure-timestamp names, just not across pre-restore/regular).
+      let timestamp = null;
       try {
-        const metaPath = path.join(backupsDir, dir, '_meta.json');
+        const metaPath = path.join(backupsDir, name, '_meta.json');
         const meta = JSON.parse(await fsp.readFile(metaPath, 'utf-8'));
-        if (new Date(meta.timestamp).getTime() < oneDayAgo) {
-          protectedOldBackup = dir;
-          break; // Oldest one
-        }
+        if (meta && meta.timestamp) timestamp = String(meta.timestamp);
       } catch {}
+      if (!timestamp) {
+        console.warn(`Backup ${name} missing metadata.timestamp; falling back to directory name for retention sort`);
+        // Strip the pre-restore- prefix if present so both groups sort
+        // on comparable ISO-ish strings.
+        timestamp = isPreRestore ? name.slice(PRE_RESTORE_PREFIX.length) : name;
+      }
+
+      all.push({ name, timestamp, isPreRestore });
     }
 
-    // Delete oldest backups until we're at max
-    const toDelete = dirs.slice(0, dirs.length - maxVersions);
-    for (const dir of toDelete) {
-      if (dir === protectedOldBackup) continue; // Keep at least one old backup
-      try {
-        await fsp.rm(path.join(backupsDir, dir), { recursive: true });
-      } catch (err) {
-        console.error(`Failed to remove old backup ${dir}: ${err.message}`);
+    // Partition. Regular backups retention is independent from pre-restore.
+    const regular = all.filter(b => !b.isPreRestore);
+    const preRestore = all.filter(b => b.isPreRestore);
+
+    // Sort each group oldest → newest by timestamp string.
+    const byTs = (a, b) => (a.timestamp < b.timestamp ? -1 : a.timestamp > b.timestamp ? 1 : 0);
+    regular.sort(byTs);
+    preRestore.sort(byTs);
+
+    const toDelete = [];
+
+    // Regular retention — keep newest `maxVersions`.
+    if (regular.length > maxVersions) {
+      const surplus = regular.slice(0, regular.length - maxVersions);
+
+      // Protect the oldest regular backup that's > 24h old (only one).
+      const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
+      let protectedDir = null;
+      for (const b of regular) {
+        const t = Date.parse(b.timestamp);
+        if (Number.isFinite(t) && t < oneDayAgo) {
+          protectedDir = b.name;
+          break; // oldest such one
+        }
+      }
+
+      for (const b of surplus) {
+        if (b.name === protectedDir) continue;
+        toDelete.push(b.name);
+      }
+    }
+
+    // Pre-restore retention — keep newest PRE_RESTORE_RETENTION.
+    if (preRestore.length > PRE_RESTORE_RETENTION) {
+      const surplus = preRestore.slice(0, preRestore.length - PRE_RESTORE_RETENTION);
+      for (const b of surplus) toDelete.push(b.name);
+    }
+
+    for (const name of toDelete) {
+      const full = path.join(backupsDir, name);
+      const moved = await this._trashWithinGameSaves(full);
+      if (!moved) {
+        console.error(`Failed to retire old backup ${name} to trash`);
       }
     }
   }
@@ -518,7 +664,18 @@ class GameBackup {
    * Copy a directory to a single destination (used for pre-restore snapshots).
    */
   /**
-   * Clean junk files from all existing backups.
+   * Clean junk files from each game's current/ directory.
+   *
+   * Scope (v2.7.5+): ONLY `<game>/current/`. We never touch
+   * `backups/<timestamp>/` because snapshots are immutable: a user who
+   * restores a 3-month-old backup must get exactly what was there when
+   * it was snapshotted. And names like "Unity" aren't reliably junk —
+   * many games (Unity Analytics, Unity Cloud Save) store real save data
+   * under directories literally called Unity/. Rewriting historical
+   * snapshots silently wiped that data.
+   *
+   * All removals go to `<gameSavesDir>/.carbonsync-trash/` for 7-day
+   * recovery, not straight to unlink/rm.
    */
   async cleanBackups() {
     const junkFiles = new Set(['player.log', 'player-prev.log', 'output_log.txt',
@@ -534,18 +691,36 @@ class GameBackup {
         const nl = entry.name.toLowerCase();
         if (entry.isDirectory()) {
           if (junkDirs.has(nl)) {
-            try { await fsp.rm(full, { recursive: true }); removed++; } catch {}
+            if (await this._trashWithinGameSaves(full)) removed++;
           } else {
             await walk(full);
           }
         } else if (junkFiles.has(nl)) {
-          try { await fsp.unlink(full); removed++; } catch {}
+          if (await this._trashWithinGameSaves(full)) removed++;
         }
       }
     };
 
-    await walk(this.gameSavesDir);
-    console.log(`Cleaned ${removed} junk files/dirs from backups`);
+    // Iterate only per-game current/ dirs. Skip hidden dirs (incl. the
+    // trash bucket itself) and anything that isn't a game directory.
+    let games;
+    try {
+      games = await fsp.readdir(this.gameSavesDir, { withFileTypes: true });
+    } catch { return { removed }; }
+
+    for (const g of games) {
+      if (!g.isDirectory()) continue;
+      if (g.name.startsWith('.') || g.name.startsWith('_')) continue;
+      const currentDir = path.join(this.gameSavesDir, g.name, 'current');
+      // Only walk if current/ exists — don't create it.
+      try {
+        const st = await fsp.stat(currentDir);
+        if (!st.isDirectory()) continue;
+      } catch { continue; }
+      await walk(currentDir);
+    }
+
+    console.log(`Cleaned ${removed} junk files/dirs from current/ (backups/ untouched)`);
     return { removed };
   }
 
@@ -714,9 +889,34 @@ class GameBackup {
 
   /**
    * Remove all backups for a game.
+   *
+   * Hardened (v2.7.5): verifies the resolved directory is strictly
+   * under gameSavesDir before rm. Empty name+id, path traversal via
+   * "../" in the name, or a resolved path that somehow lands on the
+   * game-saves root will be refused — silently rm-rf'ing every backed
+   * up game is not a recoverable operation.
    */
   async removeGame(gameName, gameId) {
+    // Reject empty inputs outright — gameDir() would fall back to a
+    // sanitized empty string, producing gameSavesDir itself.
+    const hasId = typeof gameId === 'string' && gameId.trim() !== '';
+    const hasName = typeof gameName === 'string' && gameName.trim() !== '';
+    if (!hasId && !hasName) {
+      const msg = 'removeGame: refusing empty gameName AND empty gameId (would target gameSavesDir root)';
+      console.error(msg);
+      throw new Error(msg);
+    }
+
     const dir = this.gameDir(gameName, gameId);
+
+    try {
+      this._assertSafePath(dir, this.gameSavesDir);
+    } catch (err) {
+      const msg = `removeGame: ${err.message}`;
+      console.error(msg);
+      throw new Error(msg);
+    }
+
     try {
       await fsp.rm(dir, { recursive: true });
     } catch (err) {
