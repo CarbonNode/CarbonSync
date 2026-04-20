@@ -9,7 +9,8 @@
     "ui": "electron src/ui/main.js",
     "dev": "electron src/ui/main.js --dev",
     "build": "electron-builder",
-    "test": "node --test \"test/**/*.test.js\""
+    "test": "node --test \"test/**/*.test.js\"",
+    "recover": "node tools/recover-mod-list.js"
   },
   "keywords": [],
   "author": "",
