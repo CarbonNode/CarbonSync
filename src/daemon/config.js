@@ -124,6 +124,11 @@ class Config {
 
   // ---- Folder management ----
 
+  // NOTE: Folder records also support an optional `deletionThreshold` field:
+  //   { absolute?: number, percent?: number }
+  // It overrides the deletion-guard defaults for that folder. Missing means
+  // defaults (50 files / 25%). See src/daemon/deletion-guard.js. Not migrated
+  // — `getThresholds()` falls back so old configs keep working unchanged.
   addFolder(folderPath, name, direction, folderId) {
     const resolved = path.resolve(folderPath);
     if (!fs.existsSync(resolved)) {

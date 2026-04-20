@@ -19,6 +19,7 @@ const { ensureFirewallRule } = require('./firewall');
 const { MSG, SYNC_STATE } = require('../shared/protocol');
 const { ResumeState } = require('./resume');
 const { moveToTrash } = require('./trash');
+const { evaluateDeletion, getThresholds, BLOCKED_LOG_MESSAGE } = require('./deletion-guard');
 const os = require('os');
 
 const MAX_CONCURRENT_DOWNLOADS = 4;
@@ -37,6 +38,18 @@ class CarbonSyncClient extends EventEmitter {
     this._serverInfo = null;
     this._pendingSync = new Set();
     this.resumeState = new ResumeState(this.configDir);
+    // Capped ring of recent guard-blocked deletion batches. Surfaced via the
+    // device's /blocked-deletions HTTP endpoint (and the equivalent on this
+    // client when wired); also written to sync.log for offline debugging.
+    this._blockedDeletions = [];
+  }
+
+  _recordBlockedDeletion(entry) {
+    this._blockedDeletions.push(entry);
+    if (this._blockedDeletions.length > 100) {
+      // Drop oldest. push+shift > slice for a 100-item bound.
+      this._blockedDeletions.shift();
+    }
   }
 
   async start() {
@@ -227,13 +240,49 @@ class CarbonSyncClient extends EventEmitter {
 
     // Apply deletions — moved to .carbonsync-trash/<date>/ instead of unlinked,
     // so a stale-server diff can never silently destroy local files.
-    for (const relPath of toDelete) {
-      const absPath = path.join(folder.path, relPath);
+    //
+    // Guard: refuse the WHOLE batch if it looks catastrophic (>50 files OR
+    // >25% of the folder by default; per-folder configurable). This is
+    // belt-and-suspenders with the trash bucket — trash gives us 7 days to
+    // recover, the guard prevents the deletion from being attempted at all
+    // when the diff smells wrong (e.g. stale peer index).
+    const totalFiles = scanner.getIndexMap().size;
+    const peerName = this._serverInfo?.hostname || this._serverInfo?.deviceName || 'server';
+    const guard = evaluateDeletion({
+      folderName,
+      totalFiles,
+      toDeleteCount: toDelete.length,
+      peerName,
+      thresholds: getThresholds(folder),
+    });
+    if (!guard.allowed) {
+      const line = BLOCKED_LOG_MESSAGE({
+        folderName,
+        peerName,
+        count: toDelete.length,
+        reason: guard.reason,
+      });
+      console.warn(line);
       try {
-        await moveToTrash(folder.path, relPath, { reason: 'sync-delete' });
-        scanner.removeFile(absPath);
-      } catch (err) {
-        if (err.code !== 'ENOENT') console.warn(`Delete failed [${relPath}]: ${err.message}`);
+        fs.appendFileSync(path.join(this.configDir, 'sync.log'), line + '\n');
+      } catch {}
+      this._recordBlockedDeletion({
+        folder: folderName,
+        peer: peerName,
+        count: toDelete.length,
+        reason: guard.reason,
+        timestamp: new Date().toISOString(),
+      });
+      // Don't abort the rest of the sync — downloads/copies still proceed.
+    } else {
+      for (const relPath of toDelete) {
+        const absPath = path.join(folder.path, relPath);
+        try {
+          await moveToTrash(folder.path, relPath, { reason: 'sync-delete' });
+          scanner.removeFile(absPath);
+        } catch (err) {
+          if (err.code !== 'ENOENT') console.warn(`Delete failed [${relPath}]: ${err.message}`);
+        }
       }
     }
 

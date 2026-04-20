@@ -27,6 +27,7 @@ const { ensureCerts } = require('./tls-certs');
 const { MSG, SYNC_STATE } = require('../shared/protocol');
 const { GameSaveManager } = require('./game-save-manager');
 const { moveToTrash, pruneTrash } = require('./trash');
+const { evaluateDeletion, getThresholds, BLOCKED_LOG_MESSAGE } = require('./deletion-guard');
 
 const MAX_CONCURRENT_PUSHES = 4;
 const PUSH_DEBOUNCE_MS = 500;
@@ -50,6 +51,61 @@ class CarbonSyncDevice extends EventEmitter {
     this._recentlyWritten = new Map(); // relPath -> timestamp (avoid watcher feedback loop)
     this.peerFolders = new Map();     // peerKey -> [{ name, fileCount, direction }]
     this.gameSaveManager = null;  // Set by main.js if game save feature enabled
+    // Capped ring of recent deletion-guard rejections (Phase 2 P0 fix).
+    // Surfaced through GET /blocked-deletions for the UI banner.
+    this._blockedDeletions = [];
+    // Tracks per-peer single-file delete bursts so a flood of one-at-a-time
+    // deletes still trips the guard. Map<peerName, { count, windowStart }>.
+    this._singleDeleteWindows = new Map();
+  }
+
+  /**
+   * Append a guard-rejection record. Capped at 100 entries (oldest dropped).
+   */
+  _recordBlockedDeletion(entry) {
+    this._blockedDeletions.push(entry);
+    if (this._blockedDeletions.length > 100) this._blockedDeletions.shift();
+  }
+
+  /**
+   * Run the deletion guard for a batch operation. Centralised so all four
+   * deletion code paths (pull-from-hub, pull-from-peer, client pull, push-
+   * delete-receive) share identical behaviour: threshold check, sync.log
+   * line, in-memory ring entry, console.warn.
+   *
+   * @returns {boolean} true if caller should proceed with the trash loop,
+   *                    false if the batch was rejected.
+   */
+  _checkDeletionAllowed({ folderConfig, folderName, scanner, toDeleteCount, peerName }) {
+    if (!toDeleteCount || toDeleteCount <= 0) return true;
+    let totalFiles = 0;
+    try { totalFiles = scanner?.getIndexMap?.().size || 0; } catch { totalFiles = 0; }
+    const guard = evaluateDeletion({
+      folderName,
+      totalFiles,
+      toDeleteCount,
+      peerName,
+      thresholds: getThresholds(folderConfig),
+    });
+    if (guard.allowed) return true;
+    const line = BLOCKED_LOG_MESSAGE({
+      folderName,
+      peerName,
+      count: toDeleteCount,
+      reason: guard.reason,
+    });
+    console.warn(line);
+    try {
+      fs.appendFileSync(path.join(this.configDir, 'sync.log'), line + '\n');
+    } catch {}
+    this._recordBlockedDeletion({
+      folder: folderName,
+      peer: peerName,
+      count: toDeleteCount,
+      reason: guard.reason,
+      timestamp: new Date().toISOString(),
+    });
+    return false;
   }
 
   async start() {
@@ -326,6 +382,15 @@ class CarbonSyncDevice extends EventEmitter {
           res.end(JSON.stringify({ lines }));
         } catch (err) {
           res.end(JSON.stringify({ lines: [], error: err.message }));
+        }
+      } else if (req.url === '/blocked-deletions') {
+        // P0 deletion-guard rejections so the UI can show a banner.
+        // Newest last; capped to 100 entries.
+        try {
+          res.end(JSON.stringify({ blocked: this._blockedDeletions || [] }));
+        } catch (err) {
+          res.statusCode = 500;
+          res.end(JSON.stringify({ error: err.message }));
         }
       } else {
         res.statusCode = 404;
@@ -693,14 +758,25 @@ class CarbonSyncDevice extends EventEmitter {
 
     // Deletions — moved to .carbonsync-trash/<date>/ instead of unlinked,
     // so a stale-peer diff can never silently destroy local files.
-    for (const relPath of toDelete) {
-      const absPath = path.join(folder.path, relPath);
-      try {
-        this._markRecentlyWritten(folder.name, relPath);
-        await moveToTrash(folder.path, relPath, { reason: 'sync-delete' });
-        scanner.removeFile(absPath);
-      } catch (err) {
-        if (err.code !== 'ENOENT') console.warn(`Delete failed: ${err.message}`);
+    // Guard refuses the WHOLE batch if it looks catastrophic. Downloads
+    // continue regardless so legit file pushes aren't lost.
+    const folderConfig = this.config.folders.find(f => f.name === folder.name) || folder;
+    if (this._checkDeletionAllowed({
+      folderConfig,
+      folderName: folder.name,
+      scanner,
+      toDeleteCount: toDelete.length,
+      peerName: peerInfo.deviceName || 'peer',
+    })) {
+      for (const relPath of toDelete) {
+        const absPath = path.join(folder.path, relPath);
+        try {
+          this._markRecentlyWritten(folder.name, relPath);
+          await moveToTrash(folder.path, relPath, { reason: 'sync-delete' });
+          scanner.removeFile(absPath);
+        } catch (err) {
+          if (err.code !== 'ENOENT') console.warn(`Delete failed: ${err.message}`);
+        }
       }
     }
 
@@ -864,15 +940,26 @@ class CarbonSyncDevice extends EventEmitter {
 
     console.log(`${folder.name} pull: ${toDownload.length} download, ${toCopy.length} copy, ${toDelete.length} delete`);
 
-    // Deletions — see _pullFolderFromPeer comment; route through trash bucket.
-    for (const relPath of toDelete) {
-      const absPath = path.join(folder.path, relPath);
-      try {
-        this._markRecentlyWritten(folder.name, relPath);
-        await moveToTrash(folder.path, relPath, { reason: 'sync-delete' });
-        scanner.removeFile(absPath);
-      } catch (err) {
-        if (err.code !== 'ENOENT') console.warn(`Delete failed [${relPath}]: ${err.message}`);
+    // Deletions — see _pullFolderFromPeer comment; route through trash bucket
+    // and apply the same threshold guard. Hub identified just as 'hub' since
+    // we don't track its hostname here.
+    const hubPeerName = this.config.hubAddress || 'hub';
+    if (this._checkDeletionAllowed({
+      folderConfig: folder,
+      folderName: folder.name,
+      scanner,
+      toDeleteCount: toDelete.length,
+      peerName: hubPeerName,
+    })) {
+      for (const relPath of toDelete) {
+        const absPath = path.join(folder.path, relPath);
+        try {
+          this._markRecentlyWritten(folder.name, relPath);
+          await moveToTrash(folder.path, relPath, { reason: 'sync-delete' });
+          scanner.removeFile(absPath);
+        } catch (err) {
+          if (err.code !== 'ENOENT') console.warn(`Delete failed [${relPath}]: ${err.message}`);
+        }
       }
     }
 
@@ -1354,7 +1441,40 @@ class CarbonSyncDevice extends EventEmitter {
 
   async _handleFileDeletePush(client, msg) {
     const folder = this._findEngineFolder(msg.folder);
-    if (!folder) return;
+    if (!folder) {
+      writeFrame(client.socket, { type: MSG.FILE_DELETE_ACK, _requestId: msg._requestId });
+      return;
+    }
+
+    const peerName = client.deviceName || client.ip || 'peer';
+    const folderConfig = this.config.folders.find(f => f.name === msg.folder) || folder;
+
+    // Single-file path: the per-batch guard would be a no-op here (1 file is
+    // always under the 50/25% defaults). Aggregate single-file deletes from
+    // the same peer in a 30s window so a flood of one-at-a-time deletes still
+    // trips the guard.
+    const WINDOW_MS = 30_000;
+    const key = `${peerName}::${msg.folder}`;
+    const now = Date.now();
+    let entry = this._singleDeleteWindows.get(key);
+    if (!entry || now - entry.windowStart > WINDOW_MS) {
+      entry = { count: 0, windowStart: now };
+    }
+    entry.count += 1;
+    this._singleDeleteWindows.set(key, entry);
+
+    if (this._checkDeletionAllowed({
+      folderConfig,
+      folderName: msg.folder,
+      scanner: folder.scanner,
+      toDeleteCount: entry.count,
+      peerName,
+    }) === false) {
+      // Rejected by guard — ack so the peer doesn't hang, but skip the trash
+      // move and the broadcast.
+      writeFrame(client.socket, { type: MSG.FILE_DELETE_ACK, _requestId: msg._requestId });
+      return;
+    }
 
     const absPath = path.join(folder.path, msg.path);
     try {
