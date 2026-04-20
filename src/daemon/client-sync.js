@@ -18,6 +18,7 @@ const { Discovery } = require('./discovery');
 const { ensureFirewallRule } = require('./firewall');
 const { MSG, SYNC_STATE } = require('../shared/protocol');
 const { ResumeState } = require('./resume');
+const { moveToTrash } = require('./trash');
 const os = require('os');
 
 const MAX_CONCURRENT_DOWNLOADS = 4;
@@ -224,11 +225,12 @@ class CarbonSyncClient extends EventEmitter {
       }
     }
 
-    // Apply deletions
+    // Apply deletions — moved to .carbonsync-trash/<date>/ instead of unlinked,
+    // so a stale-server diff can never silently destroy local files.
     for (const relPath of toDelete) {
       const absPath = path.join(folder.path, relPath);
       try {
-        await fsp.unlink(absPath);
+        await moveToTrash(folder.path, relPath, { reason: 'sync-delete' });
         scanner.removeFile(absPath);
       } catch (err) {
         if (err.code !== 'ENOENT') console.warn(`Delete failed [${relPath}]: ${err.message}`);

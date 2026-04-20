@@ -8,7 +8,8 @@
     "client": "node src/daemon/index.js client",
     "ui": "electron src/ui/main.js",
     "dev": "electron src/ui/main.js --dev",
-    "build": "electron-builder"
+    "build": "electron-builder",
+    "test": "node --test \"test/**/*.test.js\""
   },
   "keywords": [],
   "author": "",

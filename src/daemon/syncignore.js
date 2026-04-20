@@ -15,6 +15,9 @@ const IGNORE_FILENAME = '.carbonsyncignore';
 const DEFAULT_PATTERNS = [
   '.carbonsync/',
   '.carbonsync/**',
+  // Trash bucket — see src/daemon/trash.js. MUST never propagate to peers.
+  '.carbonsync-trash/',
+  '.carbonsync-trash/**',
   '*.carbonsync.tmp',
   '*.partial',
   'Thumbs.db',

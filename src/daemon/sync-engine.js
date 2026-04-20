@@ -184,6 +184,7 @@ class SyncEngine extends EventEmitter {
       const relPath = path.relative(folder.path, event.path).replace(/\\/g, '/');
 
       if (relPath.startsWith('.carbonsync/') || relPath.includes('/.carbonsync/')) continue;
+      if (relPath.startsWith('.carbonsync-trash/') || relPath.includes('/.carbonsync-trash/')) continue;
       if (relPath.endsWith('.tmp') || relPath.endsWith('.partial')) continue;
       if (relPath.endsWith('Thumbs.db') || relPath.endsWith('desktop.ini')) continue;
 

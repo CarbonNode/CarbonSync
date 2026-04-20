@@ -26,6 +26,7 @@ const { ensureFirewallRule } = require('./firewall');
 const { ensureCerts } = require('./tls-certs');
 const { MSG, SYNC_STATE } = require('../shared/protocol');
 const { GameSaveManager } = require('./game-save-manager');
+const { moveToTrash, pruneTrash } = require('./trash');
 
 const MAX_CONCURRENT_PUSHES = 4;
 const PUSH_DEBOUNCE_MS = 500;
@@ -245,6 +246,10 @@ class CarbonSyncDevice extends EventEmitter {
       this._syncAllPeers();
     }, 5 * 60 * 1000);
 
+    // Prune trash buckets at startup and every 6h. 7-day retention.
+    this._pruneAllTrash();
+    this._trashPruneInterval = setInterval(() => this._pruneAllTrash(), 6 * 60 * 60 * 1000);
+
     // 7. Game save detection & backup
     if (this.config.data.settings?.gameSaveEnabled !== false) {
       this.gameSaveManager = new GameSaveManager({
@@ -418,8 +423,9 @@ class CarbonSyncDevice extends EventEmitter {
             await this._pushFullFolder(folder);
             break;
           case 'both':
-            await this._pullFolder(folder);
+            // Push-before-pull: see _syncWithPeer comment.
             await this._pushFullFolder(folder);
+            await this._pullFolder(folder);
             this.hubConnection.send({ type: MSG.SUBSCRIBE, folder: folder.name });
             break;
         }
@@ -539,17 +545,17 @@ class CarbonSyncDevice extends EventEmitter {
       const dir = folder.direction || 'both';
 
       try {
-        // Pull from peer (receive or both)
+        // For 'both', push BEFORE pull: a stale peer index would otherwise
+        // make pull infer "delete" for files we just added locally.
+        if (dir === 'push' || dir === 'both') {
+          console.log(`Pushing ${folder.name} to ${peerInfo.deviceName}...`);
+          await this._pushFullFolderToPeer(peerInfo, folder);
+        }
+
         if (dir === 'receive' || dir === 'both') {
           console.log(`Pulling ${folder.name} from ${peerInfo.deviceName}...`);
           await this._pullFolderFromPeer(peerInfo, folder);
           peerInfo.client.send({ type: MSG.SUBSCRIBE, folder: folder.name });
-        }
-
-        // Push to peer (push or both) — send our files that peer doesn't have
-        if (dir === 'push' || dir === 'both') {
-          console.log(`Pushing ${folder.name} to ${peerInfo.deviceName}...`);
-          await this._pushFullFolderToPeer(peerInfo, folder);
         }
       } catch (err) {
         console.error(`Peer sync failed [${folder.name}]: ${err.message}`);
@@ -685,12 +691,13 @@ class CarbonSyncDevice extends EventEmitter {
 
     console.log(`Pull from ${peerInfo.deviceName}: ${folder.name} — ${toDownload.length} download, ${toDelete.length} delete`);
 
-    // Deletions
+    // Deletions — moved to .carbonsync-trash/<date>/ instead of unlinked,
+    // so a stale-peer diff can never silently destroy local files.
     for (const relPath of toDelete) {
       const absPath = path.join(folder.path, relPath);
       try {
         this._markRecentlyWritten(folder.name, relPath);
-        await fsp.unlink(absPath);
+        await moveToTrash(folder.path, relPath, { reason: 'sync-delete' });
         scanner.removeFile(absPath);
       } catch (err) {
         if (err.code !== 'ENOENT') console.warn(`Delete failed: ${err.message}`);
@@ -857,12 +864,12 @@ class CarbonSyncDevice extends EventEmitter {
 
     console.log(`${folder.name} pull: ${toDownload.length} download, ${toCopy.length} copy, ${toDelete.length} delete`);
 
-    // Deletions
+    // Deletions — see _pullFolderFromPeer comment; route through trash bucket.
     for (const relPath of toDelete) {
       const absPath = path.join(folder.path, relPath);
       try {
         this._markRecentlyWritten(folder.name, relPath);
-        await fsp.unlink(absPath);
+        await moveToTrash(folder.path, relPath, { reason: 'sync-delete' });
         scanner.removeFile(absPath);
       } catch (err) {
         if (err.code !== 'ENOENT') console.warn(`Delete failed [${relPath}]: ${err.message}`);
@@ -1352,7 +1359,9 @@ class CarbonSyncDevice extends EventEmitter {
     const absPath = path.join(folder.path, msg.path);
     try {
       this._markRecentlyWritten(msg.folder, msg.path);
-      await fsp.unlink(absPath);
+      // Route incoming delete pushes through the trash bucket so a peer with
+      // a stale view of our state can't silently destroy files here either.
+      await moveToTrash(folder.path, msg.path, { reason: 'sync-delete-push' });
       folder.scanner.removeFile(absPath);
       console.log(`Received delete push: ${msg.folder}/${msg.path}`);
 
@@ -1689,11 +1698,13 @@ class CarbonSyncDevice extends EventEmitter {
           }
 
           try {
-            if (dir === 'receive' || dir === 'both') {
-              await this._pullFolderFromPeer(peerInfo, folder);
-            }
+            // Push-before-pull for 'both': prevents stale peer index from
+            // inferring deletions for files we just added locally.
             if (dir === 'push' || dir === 'both') {
               await this._pushFullFolderToPeer(peerInfo, folder);
+            }
+            if (dir === 'receive' || dir === 'both') {
+              await this._pullFolderFromPeer(peerInfo, folder);
             }
           } catch (err) {
             console.error(`Quick sync failed [${folder.name}→${peerInfo.deviceName}]: ${err.message}`);
@@ -1707,8 +1718,9 @@ class CarbonSyncDevice extends EventEmitter {
           if (!folder.enabled || folder.internal) continue;
           const dir = folder.direction || 'both';
           try {
-            if (dir === 'receive' || dir === 'both') await this._pullFolder(folder);
+            // Push-before-pull for 'both': see _syncWithPeer comment.
             if (dir === 'push' || dir === 'both') await this._pushFullFolder(folder);
+            if (dir === 'receive' || dir === 'both') await this._pullFolder(folder);
           } catch (err) {
             console.error(`Quick hub sync failed [${folder.name}]: ${err.message}`);
           }
@@ -1756,13 +1768,14 @@ class CarbonSyncDevice extends EventEmitter {
     for (const [, peerInfo] of this.peerConnections) {
       if (!peerInfo.connected || !peerInfo.client?.authenticated) continue;
       try {
-        if (dir === 'receive' || dir === 'both') {
-          console.log(`Sync: pulling ${folderName} from ${peerInfo.deviceName}`);
-          await this._pullFolderFromPeer(peerInfo, folder);
-        }
+        // Push-before-pull for 'both': see _syncWithPeer comment.
         if (dir === 'push' || dir === 'both') {
           console.log(`Sync: pushing ${folderName} to ${peerInfo.deviceName}`);
           await this._pushFullFolderToPeer(peerInfo, folder);
+        }
+        if (dir === 'receive' || dir === 'both') {
+          console.log(`Sync: pulling ${folderName} from ${peerInfo.deviceName}`);
+          await this._pullFolderFromPeer(peerInfo, folder);
         }
       } catch (err) {
         console.error(`Sync with ${peerInfo.deviceName} failed [${folderName}]: ${err.message}`);
@@ -1772,11 +1785,12 @@ class CarbonSyncDevice extends EventEmitter {
     // Sync with hub if connected
     if (this.hubConnection?.authenticated) {
       try {
-        if (dir === 'receive' || dir === 'both') {
-          await this._pullFolder(folder);
-        }
+        // Push-before-pull for 'both': see _syncWithPeer comment.
         if (dir === 'push' || dir === 'both') {
           await this._pushFullFolder(folder);
+        }
+        if (dir === 'receive' || dir === 'both') {
+          await this._pullFolder(folder);
         }
       } catch (err) {
         console.error(`Hub sync failed [${folderName}]: ${err.message}`);
@@ -1796,12 +1810,13 @@ class CarbonSyncDevice extends EventEmitter {
         if (peerInfo.connected && peerInfo.client?.authenticated) {
           const dir = folder.direction || 'both';
           try {
+            // Push-before-pull for 'both': see _syncWithPeer comment.
+            if (dir === 'push' || dir === 'both') {
+              await this._pushFullFolderToPeer(peerInfo, folder);
+            }
             if (dir === 'receive' || dir === 'both') {
               await this._pullFolderFromPeer(peerInfo, folder);
               peerInfo.client.send({ type: MSG.SUBSCRIBE, folder: folder.name });
-            }
-            if (dir === 'push' || dir === 'both') {
-              await this._pushFullFolderToPeer(peerInfo, folder);
             }
           } catch (err) {
             console.error(`Sync new folder ${folder.name} with ${peerInfo.deviceName} failed: ${err.message}`);
@@ -1813,12 +1828,13 @@ class CarbonSyncDevice extends EventEmitter {
       if (this.hubConnection?.authenticated) {
         try {
           const dir = folder.direction || 'both';
+          // Push-before-pull for 'both': see _syncWithPeer comment.
+          if (dir === 'push' || dir === 'both') {
+            await this._pushFullFolder(folder);
+          }
           if (dir === 'receive' || dir === 'both') {
             await this._pullFolder(folder);
             this.hubConnection.send({ type: MSG.SUBSCRIBE, folder: folder.name });
-          }
-          if (dir === 'push' || dir === 'both') {
-            await this._pushFullFolder(folder);
           }
         } catch (err) {
           console.error(`Sync new folder ${folder.name} with hub failed: ${err.message}`);
@@ -1836,11 +1852,24 @@ class CarbonSyncDevice extends EventEmitter {
     }
   }
 
+  async _pruneAllTrash() {
+    for (const folder of this.config.folders) {
+      if (!folder.enabled) continue;
+      try {
+        const removed = await pruneTrash(folder.path, { retentionDays: 7 });
+        if (removed > 0) console.log(`Pruned ${removed} expired trash dir(s) from ${folder.name}`);
+      } catch (err) {
+        console.warn(`Trash prune failed [${folder.name}]: ${err.message}`);
+      }
+    }
+  }
+
   async stop() {
     this._stopping = true;
     if (this._scanInterval) { clearInterval(this._scanInterval); this._scanInterval = null; }
     if (this._quickSyncInterval) { clearInterval(this._quickSyncInterval); this._quickSyncInterval = null; }
     if (this._periodicSyncInterval) { clearInterval(this._periodicSyncInterval); this._periodicSyncInterval = null; }
+    if (this._trashPruneInterval) { clearInterval(this._trashPruneInterval); this._trashPruneInterval = null; }
     for (const [, timer] of this._pushTimers) clearTimeout(timer);
     this._pushTimers.clear();
     if (this._httpServer) { this._httpServer.close(); this._httpServer = null; }
