@@ -56,6 +56,21 @@ function classifyDeletion({ peerKnown, currentLocalHash } = {}) {
     return { action: 'delete', reason: 'already-gone' };
   }
 
+  // Phase 9 P0: `fast:<size>:<mtime>` is the scanner's placeholder before a
+  // SHA-256 is computed. Two unrelated files with the same size and mtime
+  // would compare equal and be authorized as peer-explicit — exactly the
+  // silent-data-loss vector Phase 3 tried to close. If either side of the
+  // comparison is a fast fingerprint, refuse to authorize the deletion.
+  // recordPeerKnown* now rejects fast: hashes, but this check is kept as
+  // defense in depth for any caller passing in older rows or for the local
+  // currentLocalHash which comes straight from the files table.
+  const peerHashIsFast = peerKnown && peerKnown.hash &&
+    String(peerKnown.hash).startsWith('fast:');
+  const localHashIsFast = String(currentLocalHash).startsWith('fast:');
+  if (peerHashIsFast || localHashIsFast) {
+    return { action: 'preserve', reason: 'fast-hash-unreliable' };
+  }
+
   // We've never recorded this peer knowing this file. Could be a stale
   // peer (the bug we're fixing) or a freshly-added local file the peer
   // hasn't seen yet. Either way: don't delete; push to peer instead.
@@ -111,9 +126,12 @@ function classifyDeletionBatch({ scanner, peerId, paths } = {}) {
     } else {
       result.preserve.push({ path: p, reason: c.reason });
       // never-known + local-modified both warrant re-pushing our copy.
+      // fast-hash-unreliable (Phase 9) also pushes back so the peer can
+      // decide with a real hash on the next round.
       // already-gone never reaches this branch (it's an action: 'delete').
       if (c.reason === 'never-known-by-peer' ||
-          c.reason === 'local-modified-since-sync') {
+          c.reason === 'local-modified-since-sync' ||
+          c.reason === 'fast-hash-unreliable') {
         result.pushBack.push(p);
       }
     }

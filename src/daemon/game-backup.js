@@ -80,28 +80,90 @@ class GameBackup {
    *   - dir !== root
    *   - dir is strictly underneath root (no symlink/.. escape)
    *   - resolved relative path has no ".." segments
-   * Throws Error on any violation.
+   * `root` may be either a single path or an array of candidate roots —
+   * `dir` just has to be strictly under ONE of them. Throws Error otherwise.
    */
   _assertSafePath(dir, root) {
     if (typeof dir !== 'string' || !dir) {
       throw new Error('unsafe path: empty');
     }
-    if (typeof root !== 'string' || !root) {
+    const roots = Array.isArray(root) ? root : [root];
+    if (roots.length === 0) {
       throw new Error('unsafe path: empty root');
     }
     const absDir = path.resolve(dir);
-    const absRoot = path.resolve(root);
-    if (absDir === absRoot) {
-      throw new Error(`unsafe path: would target root (${absRoot})`);
+    let firstError = null;
+    for (const r of roots) {
+      if (typeof r !== 'string' || !r) continue;
+      const absRoot = path.resolve(r);
+      if (absDir === absRoot) {
+        firstError = firstError || new Error(`unsafe path: would target root (${absRoot})`);
+        continue;
+      }
+      const prefix = absRoot.endsWith(path.sep) ? absRoot : absRoot + path.sep;
+      if (!absDir.startsWith(prefix)) {
+        firstError = firstError || new Error(`unsafe path: ${absDir} not under ${absRoot}`);
+        continue;
+      }
+      const rel = path.relative(absRoot, absDir);
+      if (!rel || rel.startsWith('..') || rel.split(/[\\/]+/).includes('..')) {
+        firstError = firstError || new Error(`unsafe path: relative ${rel} escapes ${absRoot}`);
+        continue;
+      }
+      // Passed for this root.
+      return;
     }
-    const prefix = absRoot.endsWith(path.sep) ? absRoot : absRoot + path.sep;
-    if (!absDir.startsWith(prefix)) {
-      throw new Error(`unsafe path: ${absDir} not under ${absRoot}`);
+    throw firstError || new Error(`unsafe path: ${absDir} not under any allowed root`);
+  }
+
+  /**
+   * Phase 9 P0: guard saveBase overwrites. `saveBase` is read from the
+   * per-game `_game.json` metadata; if that file got corrupted (or
+   * tampered with) the restore* path would happily copy backups onto
+   * arbitrary filesystem locations like C:\Windows. Be permissive about
+   * where a user can legitimately store saves — AppData, Documents,
+   * Saved Games, My Games, or anywhere under the home directory — but
+   * refuse filesystem roots and obviously shallow targets.
+   *
+   * Errs on the side of permissive: users legitimately keep saves in weird
+   * places (Steam libraries on secondary drives, portable installs, etc.).
+   * The absolute-minimum depth check (3 path segments under the drive
+   * root) blocks the pathological "saveBase is C:\ or /" case.
+   */
+  _assertSafeSaveBase(saveBase) {
+    if (typeof saveBase !== 'string' || !saveBase) {
+      throw new Error('unsafe saveBase: empty');
     }
-    const rel = path.relative(absRoot, absDir);
-    if (!rel || rel.startsWith('..') || rel.split(/[\\/]+/).includes('..')) {
-      throw new Error(`unsafe path: relative ${rel} escapes ${absRoot}`);
+    const abs = path.resolve(saveBase);
+    const parsed = path.parse(abs);
+    // Refuse the filesystem root itself (e.g. "C:\", "/", "\\server\share").
+    if (abs === parsed.root || abs === path.resolve(parsed.root)) {
+      throw new Error(`unsafe saveBase: filesystem root (${abs})`);
     }
+    // Strip the drive/root and split. A "plausible save path" is at least
+    // 3 segments deep (e.g. AppData\Local\Game, Documents\My Games\Game).
+    const stripped = abs.slice(parsed.root.length);
+    const segs = stripped.split(/[\\/]+/).filter(Boolean);
+    if (segs.length < 3) {
+      throw new Error(`unsafe saveBase: too shallow (${abs})`);
+    }
+    // Allow if under homedir OR one of the well-known save root markers
+    // anywhere in the path (case-insensitive).
+    const home = os.homedir();
+    try {
+      const homeAbs = path.resolve(home);
+      const homePrefix = homeAbs.endsWith(path.sep) ? homeAbs : homeAbs + path.sep;
+      if (abs === homeAbs) {
+        throw new Error(`unsafe saveBase: equals homedir (${abs})`);
+      }
+      if (abs.startsWith(homePrefix)) return;
+    } catch {}
+    const MARKERS = ['AppData', 'Documents', 'Saved Games', 'My Games', 'Library/Application Support', 'Library\\Application Support', '.local/share', '.config'];
+    const lower = abs.toLowerCase();
+    for (const m of MARKERS) {
+      if (lower.includes(m.toLowerCase())) return;
+    }
+    throw new Error(`unsafe saveBase: ${abs} not under homedir and no save-root marker found`);
   }
 
   /**
@@ -573,6 +635,10 @@ class GameBackup {
     const saveBase = gameMeta.saveBase;
     if (!saveBase) throw new Error(`No save location recorded for ${gameName}`);
 
+    // Phase 9 P0: block a corrupted/tampered _game.json from coaxing us into
+    // overwriting arbitrary paths (C:\Windows, /, etc.).
+    this._assertSafeSaveBase(saveBase);
+
     const backupDir = path.join(dir, 'backups', backupTimestamp);
     if (!fs.existsSync(backupDir)) {
       throw new Error(`Backup not found: ${backupTimestamp}`);
@@ -605,6 +671,11 @@ class GameBackup {
     // Use targetPath override (for cross-PC restore) or fall back to stored path
     const saveBase = targetPath || gameMeta.saveBase;
     if (!saveBase) throw new Error(`No save location recorded for ${gameName}`);
+
+    // Phase 9 P0: same saveBase safety check as restoreSave. Equally important
+    // here because targetPath comes from UI input and gameMeta.saveBase comes
+    // from on-disk config — both untrusted from the backup engine's POV.
+    this._assertSafeSaveBase(saveBase);
 
     const currentDir = path.join(dir, 'current');
     if (!fs.existsSync(currentDir)) {
@@ -926,10 +997,33 @@ class GameBackup {
 
   /**
    * Rename a game (moves the directory).
+   *
+   * Phase 9 P0: guarded with _assertSafePath on both source and destination.
+   * A path-traversal `newName` (e.g. `../../../etc`) would otherwise let a
+   * rename stomp on paths outside gameSavesDir. Empty names are also refused
+   * because gameDir() sanitises them to an empty string that resolves to
+   * gameSavesDir itself — renaming that would wipe every managed game.
    */
   async renameGame(oldName, newName) {
+    const hasOld = typeof oldName === 'string' && oldName.trim() !== '';
+    const hasNew = typeof newName === 'string' && newName.trim() !== '';
+    if (!hasOld || !hasNew) {
+      throw new Error('renameGame: empty oldName or newName');
+    }
+
     const oldDir = this.gameDir(oldName);
     const newDir = this.gameDir(newName);
+
+    // Both endpoints must be strictly under gameSavesDir. If either fails
+    // the check, refuse the operation — don't half-rename.
+    try {
+      this._assertSafePath(oldDir, this.gameSavesDir);
+      this._assertSafePath(newDir, this.gameSavesDir);
+    } catch (err) {
+      const msg = `renameGame: ${err.message}`;
+      console.error(msg);
+      throw new Error(msg);
+    }
 
     if (oldDir === newDir) {
       // Same sanitized name — just update the display name in metadata

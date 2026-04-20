@@ -26,7 +26,7 @@ const { ensureFirewallRule } = require('./firewall');
 const { ensureCerts } = require('./tls-certs');
 const { MSG, SYNC_STATE } = require('../shared/protocol');
 const { GameSaveManager } = require('./game-save-manager');
-const { moveToTrash, pruneTrash } = require('./trash');
+const { moveToTrash, pruneTrash, pruneConflicts } = require('./trash');
 const { evaluateDeletion, getThresholds, BLOCKED_LOG_MESSAGE } = require('./deletion-guard');
 const { classifyDeletion, classifyDeletionBatch, evaluateDeletionWithDiscovery } = require('./stale-peer-guard');
 const { classifyOverwrite, getShrinkThreshold, SHRINK_BLOCKED_LOG_MESSAGE } = require('./shrink-guard');
@@ -149,6 +149,25 @@ class CarbonSyncDevice extends EventEmitter {
         console.warn(`Mark peer discovering failed [${folder.name}]: ${err.message}`);
       }
     }
+  }
+
+  /**
+   * Phase 9 P0: rate-limited "scanner stale" warning. The scanner's `_stale`
+   * flag is set when a scan is aborted mid-walk, when the folder became
+   * inaccessible, or when a full scan throws. Pushing a partial index in that
+   * state produces the same "peer sees phantom deletions" bug Phase 7 fixed
+   * at the initial-scan-complete level — this is the in-flight variant.
+   */
+  _logScannerStale(folderName) {
+    const key = `stale:${folderName || 'unknown'}`;
+    const now = Date.now();
+    if (!this._engineNotReadyLogged) this._engineNotReadyLogged = new Map();
+    const last = this._engineNotReadyLogged.get(key) || 0;
+    if (now - last < 60_000) return;
+    this._engineNotReadyLogged.set(key, now);
+    const line = `[${new Date().toISOString()}] SCANNER-STALE: deferred sync for folder=${folderName || 'unknown'} — scanner reports stale index, waiting for next successful scan`;
+    console.warn(line);
+    try { fs.appendFileSync(path.join(this.configDir, 'sync.log'), line + '\n'); } catch {}
   }
 
   /**
@@ -1053,6 +1072,17 @@ class CarbonSyncDevice extends EventEmitter {
       return;
     }
 
+    // Phase 9 P0: defense in depth against pushing a partial index. The
+    // initial-scan gate above only covers the very first scan; a subsequent
+    // scan that was cancelled / aborted / errored flips scanner._stale back
+    // to true but leaves initial_scan_complete set. Pushing that index would
+    // present gaps to the peer which they'd interpret as deletions.
+    if (typeof engineFolder.scanner.isStale === 'function' &&
+        engineFolder.scanner.isStale()) {
+      this._logScannerStale(folder.name);
+      return;
+    }
+
     const localIndex = engineFolder.scanner.getIndex();
 
     // Send our index, get back what they need
@@ -1761,6 +1791,11 @@ class CarbonSyncDevice extends EventEmitter {
       this._logEngineNotReady(this.config.hubAddress || 'hub');
       return;
     }
+    // Phase 9 P0: scanner-stale guard — see _pushFullFolderToPeer.
+    if (typeof scanner.isStale === 'function' && scanner.isStale()) {
+      this._logScannerStale(folder.name);
+      return;
+    }
     const localIndex = scanner.getIndex();
 
     const response = await this.hubConnection.request({
@@ -2233,6 +2268,17 @@ class CarbonSyncDevice extends EventEmitter {
       return;
     }
 
+    // Phase 9 P0: scanner-stale guard. A scan in-flight, cancelled, or
+    // failing midway leaves _stale=true with a possibly-partial index in
+    // place. Replying with a toDelete computed against that index tells the
+    // peer to delete files we simply haven't finished scanning yet. Reply
+    // 'Index stale' so the peer's existing retry path re-issues shortly.
+    if (typeof folder.scanner.isStale === 'function' && folder.scanner.isStale()) {
+      this._logScannerStale(msg.folder);
+      writeFrame(client.socket, { type: MSG.ERROR, message: 'Index stale', _requestId: msg._requestId });
+      return;
+    }
+
     const hubIndex = folder.scanner.getIndexMap();
     const clientIndex = msg.index || [];
 
@@ -2636,8 +2682,18 @@ class CarbonSyncDevice extends EventEmitter {
   /**
    * Force rescan a folder and sync with all connected peers.
    * Called by UI "Rescan" button.
+   *
+   * Phase 9 P0: engine-ready gate. The downstream _pushFullFolder* / _pull*
+   * calls already gate on _engineReady and return silently; that's fine for
+   * timer-driven callers but hides the reason from a user who just clicked
+   * "Rescan." Throw here so the UI layer can surface a clear "still scanning"
+   * message instead of pretending the rescan succeeded.
    */
   async syncFolder(folderName) {
+    if (!this._engineReady) {
+      this._logEngineNotReady('user-triggered-syncFolder');
+      throw new Error('Engine not ready — initial scan in progress. Please wait.');
+    }
     // Force rescan local files first
     await this.engine.rescan(folderName);
 
@@ -2741,6 +2797,18 @@ class CarbonSyncDevice extends EventEmitter {
         if (removed > 0) console.log(`Pruned ${removed} expired trash dir(s) from ${folder.name}`);
       } catch (err) {
         console.warn(`Trash prune failed [${folder.name}]: ${err.message}`);
+      }
+      // Phase 9 P0: conflict sidecars don't expire on their own. 30-day
+      // retention (longer than trash — rarer, and every conflict sidecar
+      // represents genuine user content that a merge decision has to be
+      // made about).
+      try {
+        const conflicts = await pruneConflicts(folder.path, { retentionDays: 30 });
+        if (conflicts > 0) {
+          console.log(`Pruned ${conflicts} expired conflict sidecar(s) from ${folder.name}`);
+        }
+      } catch (err) {
+        console.warn(`Conflict prune failed [${folder.name}]: ${err.message}`);
       }
     }
   }

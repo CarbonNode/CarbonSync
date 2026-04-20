@@ -146,30 +146,43 @@ class Scanner {
 
   /**
    * Record that a peer is known to have a file at a specific hash.
+   *
+   * Phase 9 P0: `fast:<size>:<mtime>` fingerprints are rejected. They're a
+   * placeholder used before a SHA-256 is computed; two unrelated files can
+   * collide on (size, mtime) and be treated as "same," which would allow the
+   * stale-peer deletion guard to authorize deleting the wrong file.
+   *
    * @param {string} peerId  - Stable peer identifier (e.g. 'peer:HOSTNAME', 'hub:1.2.3.4:21547').
    * @param {string} relPath - File path relative to folder root.
    * @param {string} hash    - Content hash the peer has.
    */
   recordPeerKnown(peerId, relPath, hash) {
     if (!peerId || !relPath || !hash) return;
+    if (String(hash).startsWith('fast:')) return;
     this._stmtPeerUpsert.run(peerId, relPath, hash, Date.now());
   }
 
   /**
    * Bulk-record peer-known state. Wrapped in a single transaction.
+   *
+   * Phase 9 P0: filters out any entry whose hash is a `fast:` fingerprint —
+   * see recordPeerKnown above for rationale.
+   *
    * @param {string} peerId
    * @param {Array<{path: string, hash: string}>} entries
    */
   recordPeerKnownBulk(peerId, entries) {
     if (!peerId || !Array.isArray(entries) || entries.length === 0) return;
+    const filtered = entries.filter(e =>
+      e && e.path && e.hash && !String(e.hash).startsWith('fast:'));
+    if (filtered.length === 0) return;
     const now = Date.now();
     const tx = this.db.transaction((rows) => {
       for (const r of rows) {
-        if (!r || !r.path || !r.hash) continue;
         this._stmtPeerUpsert.run(peerId, r.path, r.hash, now);
       }
     });
-    tx(entries);
+    tx(filtered);
   }
 
   /**
