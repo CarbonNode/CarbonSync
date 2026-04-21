@@ -32,6 +32,7 @@ class DaemonProxy extends EventEmitter {
     const scriptPath = path.join(__dirname, 'daemon-process.js');
     this._process = fork(scriptPath, [this.configDir], {
       stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
+      execArgv: ['--max-old-space-size=8192'],
     });
     this._alive = true;
 

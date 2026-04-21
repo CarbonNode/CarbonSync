@@ -78,6 +78,10 @@ class CarbonSyncDevice extends EventEmitter {
     // Phase 7 P0: poll timer that flips _engineReady true once engine.start()
     // has resolved AND every enabled folder reports isInitialScanComplete().
     this._engineReadyPoll = null;
+    // Debounces auto-connect-back scheduling: peerKey -> pending setTimeout.
+    // Without this, a burst of N inbound sockets from the same peer schedules
+    // N 3s timers that all fire in parallel and spawn N connectToPeer calls.
+    this._pendingAutoConnectBack = new Map();
   }
 
   /**
@@ -572,16 +576,23 @@ class CarbonSyncDevice extends EventEmitter {
         this.emit('client-connected', { deviceName: c.deviceName, deviceId: c.deviceId, ip: remoteIp, auto: true });
         this._sendFolderList(c);
 
-        // Auto-connect back after a short delay (avoid blocking the inbound handler)
+        // Auto-connect back after a short delay (avoid blocking the inbound handler).
+        // Skip if we're already connected OR a reverse-connect is already scheduled —
+        // a reconnect storm would otherwise schedule one timer per inbound socket and
+        // they'd all fire connectToPeer() in parallel at t+3s.
         const peerKey = `${remoteIp}:${this.config.port}`;
         const alreadyConnected = this.peerConnections.has(peerKey) && this.peerConnections.get(peerKey).connected;
-        if (remoteIp && !alreadyConnected) {
-          setTimeout(() => {
+        const isSelf = remoteIp === '127.0.0.1' || c.deviceId === this.config.deviceId;
+        if (remoteIp && !alreadyConnected && !isSelf && !this._pendingAutoConnectBack.has(peerKey)) {
+          const timer = setTimeout(() => {
+            this._pendingAutoConnectBack.delete(peerKey);
             console.log(`Auto-connecting back to ${c.deviceName} (${remoteIp})...`);
             this.connectToPeer(remoteIp, this.config.port).then(result => {
               if (result.success) {
                 console.log(`Bi-directional connection with ${c.deviceName} established`);
                 if (!this.config.data.savedPeers) this.config.data.savedPeers = [];
+                // Never persist self as a saved peer — a 127.0.0.1 self-loop would
+                // re-amplify on every subsequent boot.
                 if (!this.config.data.savedPeers.some(p => p.ip === remoteIp)) {
                   this.config.data.savedPeers.push({ ip: remoteIp, port: this.config.port, deviceName: c.deviceName });
                   this.config.save();
@@ -592,7 +603,8 @@ class CarbonSyncDevice extends EventEmitter {
             }).catch(err => {
               console.log(`Auto-connect back error: ${err.message}`);
             });
-          }, 3000); // Wait 3s for inbound to fully settle
+          }, 3000);
+          this._pendingAutoConnectBack.set(peerKey, timer);
         }
       } else {
         // New peer — emit sync request for UI to show approval popup
@@ -900,7 +912,10 @@ class CarbonSyncDevice extends EventEmitter {
     if (this.peerConnections.has(key)) {
       const existing = this.peerConnections.get(key);
       if (existing.client?.connected) return { success: true, message: 'Already connected' };
-      // Disconnect old one
+      // Share an in-flight handshake instead of tearing it down — N concurrent
+      // callers (e.g. debounced auto-connect-back racing with saved-peer reconnect)
+      // must not spawn N parallel SyncClient instances.
+      if (existing._pending) return existing._pending;
       existing.client?.disconnect();
     }
 
@@ -915,7 +930,7 @@ class CarbonSyncDevice extends EventEmitter {
     const peerInfo = { client, ip, port, deviceName: null, connected: false };
     this.peerConnections.set(key, peerInfo);
 
-    return new Promise((resolve) => {
+    const pending = new Promise((resolve) => {
       const timeout = setTimeout(() => {
         resolve({ success: false, message: 'Connection timed out' });
       }, 10000);
@@ -1015,6 +1030,12 @@ class CarbonSyncDevice extends EventEmitter {
 
       client.connect();
     });
+
+    peerInfo._pending = pending;
+    pending.finally(() => {
+      if (peerInfo._pending === pending) peerInfo._pending = null;
+    });
+    return pending;
   }
 
   /**
@@ -2822,6 +2843,8 @@ class CarbonSyncDevice extends EventEmitter {
     if (this._engineReadyPoll) { clearInterval(this._engineReadyPoll); this._engineReadyPoll = null; }
     for (const [, timer] of this._pushTimers) clearTimeout(timer);
     this._pushTimers.clear();
+    for (const [, timer] of this._pendingAutoConnectBack) clearTimeout(timer);
+    this._pendingAutoConnectBack.clear();
     if (this._httpServer) { this._httpServer.close(); this._httpServer = null; }
     if (this.gameSaveManager) await this.gameSaveManager.stop();
     if (this.hubConnection) this.hubConnection.disconnect();

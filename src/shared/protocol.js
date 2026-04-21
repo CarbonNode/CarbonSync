@@ -6,7 +6,7 @@
  */
 
 const PROTOCOL_VERSION = 1;
-const MAX_FRAME_SIZE = 16 * 1024 * 1024; // 16MB max JSON frame (index pages)
+const MAX_FRAME_SIZE = 256 * 1024 * 1024; // 256MB max JSON frame (large folder indexes)
 // Binary data frames are 512KB each (streamed, not limited by MAX_FRAME_SIZE)
 const DEFAULT_PORT = 21547; // CarbonSync default port
 const SERVICE_TYPE = 'carbonsync';

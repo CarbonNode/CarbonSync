@@ -323,10 +323,14 @@ class SyncClient extends EventEmitter {
     this._pendingRequests = new Map();
     this._requestId = 0;
     this._binaryCollector = null;
+    // Set by disconnect() so a stray socket-close firing after intentional
+    // teardown can't resurrect the client via _scheduleReconnect.
+    this._disposed = false;
   }
 
   connect() {
     if (this.socket) this.disconnect();
+    this._disposed = false;
     this._requestId = 0;
 
     this.parser = new FrameParser();
@@ -463,6 +467,7 @@ class SyncClient extends EventEmitter {
   send(message) { if (this.connected) writeFrame(this.socket, message); }
 
   disconnect() {
+    this._disposed = true;
     if (this._reconnectTimer) { clearTimeout(this._reconnectTimer); this._reconnectTimer = null; }
     for (const [, pending] of this._pendingRequests) {
       clearTimeout(pending.timeout);
@@ -473,12 +478,19 @@ class SyncClient extends EventEmitter {
       this._binaryCollector.reject?.(new Error('Disconnected'));
       this._binaryCollector = null;
     }
-    if (this.socket) { this.socket.destroy(); this.socket = null; }
+    if (this.socket) {
+      // Drop listeners before destroy so the async close event can't fire handlers
+      // that write to a new parser/socket from a subsequent connect().
+      this.socket.removeAllListeners();
+      this.socket.destroy();
+      this.socket = null;
+    }
     this.connected = false;
     this.authenticated = false;
   }
 
   _scheduleReconnect() {
+    if (this._disposed) return;
     if (this._reconnectTimer) return;
     this._reconnectTimer = setTimeout(() => {
       this._reconnectTimer = null;
