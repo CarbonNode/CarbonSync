@@ -31,6 +31,19 @@ LAN SSH is enabled on every peer. Users:
 
 Never edit a peer's `~/.carbonsync/config.json` while its daemon is running — the next `config.save()` will overwrite your edit. Stop `CarbonSync.exe` first (`taskkill /F /IM CarbonSync.exe`).
 
+## Source of truth & releases (READ before bumping the version or publishing)
+
+`main` is the source of truth and MUST equal the latest release tag's code. It once did not: production reached **v2.7.9 (139 commits ahead)** while `main` sat at **v2.7.0**, because releases were built locally and the tags pushed *without merging the source back to `main`*. An agent then cloned the stale `main`, built **v2.7.1** from it, and published it as the GitHub "Latest" release — a **downgrade** that the in-app updater would have pushed to every peer (caught and reverted before anyone pulled it).
+
+Rules so this never happens again:
+
+1. **Always work from `main`, and verify it is current first:** `git fetch --tags && git describe --tags` should report the newest release. If `main` is behind a tag, STOP and reconcile before changing anything.
+2. **Cut releases from `main` only, via CI** (`.github/workflows/release.yml`): bump `package.json` version on `main` → commit → `git tag vX.Y.Z` → push the tag. The workflow builds the NSIS installer on a Windows runner *from the tagged commit* and publishes the GitHub Release. Do **not** build + tag from a local working copy that isn't on `main`.
+3. **The in-app updater (`src/daemon/updater.js`) auto-installs whatever is `releases/latest`.** A wrong/older "Latest" is a fleet-wide downgrade. New releases must be strictly newer than what peers run (`isNewer` guards this on ≥2.7.10; older peers compare with `!=` and WILL downgrade — so never publish an older tag as Latest).
+
 ## Deployment
 
-Code changes require a rebuild (`npm run build` → `electron-builder`) and reinstall of the installer on each peer. There is no hot-reload and no container push. Pushing source alone does not update peers.
+Code changes require a rebuild (`npm run build` → `electron-builder`) and reinstall on each peer — there is no hot-reload and no container push, and pushing source alone does not update peers. Two ways the rebuilt installer reaches peers:
+
+- **Automatic:** push a `vX.Y.Z` tag → CI builds + publishes the GitHub Release → peers pick it up via the in-app updater (`src/daemon/updater.js` checks `releases/latest`).
+- **Manual:** build locally and run the installer on the peer, or use the in-app **Check for update → Download**.
