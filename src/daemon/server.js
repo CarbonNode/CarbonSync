@@ -179,6 +179,17 @@ class CarbonSyncServer extends EventEmitter {
         case MSG.PING:
           writeFrame(client.socket, { type: MSG.PONG, _requestId: msg._requestId });
           break;
+        case MSG.HASH_CHECK: {
+          // Cheap idle-sync gate: return per-folder root hashes so clients can
+          // skip folders that are already in sync instead of uploading their
+          // full index every quick-sync cycle.
+          const hashes = {};
+          for (const folderName of this.engine.getFolderNames()) {
+            hashes[folderName] = this.engine.getRootHash(folderName);
+          }
+          writeFrame(client.socket, { type: MSG.HASH_CHECK_RESPONSE, hashes, _requestId: msg._requestId });
+          break;
+        }
         default:
           writeFrame(client.socket, { type: MSG.ERROR, message: 'Unknown message type', _requestId: msg._requestId });
       }

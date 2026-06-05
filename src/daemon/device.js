@@ -2660,11 +2660,32 @@ class CarbonSyncDevice extends EventEmitter {
         }
       }
 
-      // Hub sync with hash check
+      // Hub sync — gate with a cheap root-hash check so we skip folders that
+      // are already in sync instead of uploading the full index every cycle.
+      // (Large folders like Patreon ship a ~50MB index frame; doing that every
+      // 15s while idle was a major source of network load.)
       if (this.hubConnection?.authenticated) {
+        let hubHashes;
+        try {
+          const resp = await this.hubConnection.request({ type: MSG.HASH_CHECK }, 10000);
+          hubHashes = resp.hashes || {};
+        } catch {
+          // Older hub without HASH_CHECK support — fall back to full sync
+          hubHashes = null;
+        }
+
         for (const folder of this.config.folders) {
           if (!folder.enabled || folder.internal) continue;
           const dir = folder.direction || 'both';
+
+          // If the hub supports hash check and the folder is identical, skip it.
+          if (hubHashes !== null) {
+            const ef = this._findEngineFolder(folder.name);
+            const localHash = ef?.scanner.getRootHash();
+            const hubHash = hubHashes[folder.name];
+            if (localHash && hubHash && localHash === hubHash) continue; // In sync — skip
+          }
+
           try {
             // Push-before-pull for 'both': see _syncWithPeer comment.
             if (dir === 'push' || dir === 'both') await this._pushFullFolder(folder);
