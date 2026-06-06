@@ -654,11 +654,16 @@ class CarbonSyncDevice extends EventEmitter {
       this._quickSyncAllPeers();
     }, 15000);
 
-    // Full rescan every 5 minutes: safety net for when watchers miss changes.
+    // Periodic safety-net rescan: catches changes the native watcher silently
+    // dropped. The watcher (incremental, real-time) + the 15s quick-sync above
+    // handle the normal path, so this only needs to run occasionally — every
+    // 30 min, not every 5. At 5 min a full cycle over large folders (Patreon is
+    // 168k files) outlasted the interval, so it ran back-to-back and pegged a
+    // core. force=false so a folder scanned moments ago isn't re-walked.
     this._periodicSyncInterval = setInterval(() => {
       if (!this._engineReady) return;
-      this._syncAllPeers();
-    }, 5 * 60 * 1000);
+      this._syncAllPeers({ force: false });
+    }, 30 * 60 * 1000);
 
     // Prune trash buckets at startup and every 6h. 7-day retention.
     this._pruneAllTrash();
@@ -2704,14 +2709,14 @@ class CarbonSyncDevice extends EventEmitter {
    * Rescan all folders and sync with every connected peer.
    * Called on startup after initial scan, periodically, and on peer connect.
    */
-  async _syncAllPeers() {
+  async _syncAllPeers({ force = true } = {}) {
     if (this._fullSyncRunning) return;
     this._fullSyncRunning = true;
     try {
       for (const folder of this.config.folders) {
         if (!folder.enabled || folder.internal) continue;
         try {
-          await this.syncFolder(folder.name);
+          await this.syncFolder(folder.name, { force });
         } catch (err) {
           console.error(`Periodic sync failed [${folder.name}]: ${err.message}`);
         }
@@ -2731,13 +2736,15 @@ class CarbonSyncDevice extends EventEmitter {
    * "Rescan." Throw here so the UI layer can surface a clear "still scanning"
    * message instead of pretending the rescan succeeded.
    */
-  async syncFolder(folderName) {
+  async syncFolder(folderName, { force = true } = {}) {
     if (!this._engineReady) {
       this._logEngineNotReady('user-triggered-syncFolder');
       throw new Error('Engine not ready — initial scan in progress. Please wait.');
     }
-    // Force rescan local files first
-    await this.engine.rescan(folderName);
+    // Rescan local files first. Default force=true for user-triggered rescans;
+    // the periodic safety-net passes force=false so a just-scanned folder is
+    // skipped by the 60s cache instead of re-walked.
+    await this.engine.rescan(folderName, { force });
 
     const folder = this.config.folders.find(f => f.name === folderName);
     if (!folder) return;

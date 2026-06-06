@@ -102,7 +102,7 @@ class Scanner {
     this._stmtGet = this.db.prepare('SELECT * FROM files WHERE path = ?');
     this._stmtDelete = this.db.prepare('DELETE FROM files WHERE path = ?');
     this._stmtAll = this.db.prepare('SELECT * FROM files ORDER BY path');
-    this._stmtPurgeOld = this.db.prepare('DELETE FROM files WHERE scanned_at < ?');
+    this._stmtAllPaths = this.db.prepare('SELECT path FROM files');
     this._stmtSetMeta = this.db.prepare('INSERT OR REPLACE INTO meta (key, value) VALUES (?, ?)');
     this._stmtGetMeta = this.db.prepare('SELECT value FROM meta WHERE key = ?');
     this._stmtUpsertDir = this.db.prepare('INSERT OR REPLACE INTO dirs (path, scanned_at) VALUES (?, ?)');
@@ -363,6 +363,14 @@ class Scanner {
       });
 
       let batch = [];
+      // Set of every relPath present on disk this scan. Deletions are detected
+      // by set-difference against the DB at the end (see below) instead of by
+      // re-stamping every row with a new scanId. This is what lets an unchanged
+      // file be a true no-op: a folder with no changes performs ZERO writes,
+      // so a 168k-file folder no longer rewrites its entire ~200MB index (and
+      // bloats the WAL) on every periodic safety-net rescan. That redundant
+      // rewrite was pegging a CPU core continuously even when idle.
+      const seen = new Set();
 
       for (let i = 0; i < files.length; i++) {
         // Check for cancellation
@@ -376,6 +384,7 @@ class Scanner {
 
         const file = files[i];
         const relPath = path.relative(this.folderPath, file.path).replace(/\\/g, '/');
+        seen.add(relPath);
 
         if (i % 100 === 0 || i === files.length - 1) {
           this.onProgress({ phase: 'scanning', current: i + 1, total: files.length, file: relPath });
@@ -386,11 +395,15 @@ class Scanner {
         try {
           const existing = this._stmtGet.get(relPath);
 
-          // Fast path: skip if mtime and size unchanged
+          // Fast path: mtime and size unchanged — true no-op, no DB write.
+          // The row already holds the correct size/mtime/hash; re-writing it
+          // (as earlier versions did, only to refresh scanned_at for the
+          // scanId-based purge) is what made an idle rescan rewrite the whole
+          // index. Deletion detection no longer depends on re-stamping, so we
+          // leave the row untouched.
           if (existing &&
               existing.mtime_ms === Math.floor(file.mtime) &&
               existing.size === file.size) {
-            batch.push({ relPath, size: existing.size, mtime: existing.mtime_ms, hash: existing.hash, scanId });
             stats.unchanged++;
           } else if (existing) {
             // File modified — hash it for accurate comparison
@@ -429,9 +442,22 @@ class Scanner {
         this._stmtPurgeDirs.run(scanId);
       }
 
-      // Phase 4: Purge deleted files
-      const purged = this._stmtPurgeOld.run(scanId);
-      stats.deleted = purged.changes;
+      // Phase 4: Purge deleted files by set-difference. A row whose path was
+      // not seen on disk this scan is a deletion. This replaces the old
+      // "DELETE WHERE scanned_at < scanId" purge, which required re-stamping
+      // every surviving row each scan (the full-index rewrite we just removed).
+      // Only genuine deletions are written here — normally zero.
+      const toDelete = [];
+      for (const row of this._stmtAllPaths.iterate()) {
+        if (!seen.has(row.path)) toDelete.push(row.path);
+      }
+      if (toDelete.length > 0) {
+        const deleteBatch = this.db.transaction((paths) => {
+          for (const p of paths) this._stmtDelete.run(p);
+        });
+        deleteBatch(toDelete);
+      }
+      stats.deleted = toDelete.length;
 
       // Mark scan as complete
       this._stmtSetMeta.run('last_scan', String(scanId));
