@@ -365,12 +365,15 @@ class SyncEngine extends EventEmitter {
   }
 
   /**
-   * Force rescan a folder (bypasses the 60s scan cache).
+   * Rescan a folder. force=true (default) bypasses the 60s scan cache — used
+   * for user-triggered "Rescan" and post-connect sync where the caller wants a
+   * fresh walk now. The periodic safety-net passes force=false so a scan that
+   * just ran isn't repeated needlessly.
    */
-  async rescan(folderName) {
+  async rescan(folderName, { force = true } = {}) {
     const folder = this.folders.get(folderName);
     if (!folder) return null;
-    return folder.scanner.fullScan({ force: true });
+    return folder.scanner.fullScan({ force });
   }
 
   /**
