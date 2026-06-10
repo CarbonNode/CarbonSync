@@ -1,0 +1,28 @@
+{
+  "role": "hub",
+  "deviceName": "CarbonServer",
+  "token": "REPLACE-WITH-FLEET-TOKEN",
+  "dataPort": 21600,
+  "apiPort": 21601,
+  "tls": true,
+  "folders": [
+    {
+      "id": "game-saves",
+      "name": "Game Saves",
+      "excludes": ["*.bak"],
+      "devices": {
+        "CarbonServer": { "path": "C:\\Sync\\Game Saves", "mode": "two-way" },
+        "Kingdel": { "path": "F:\\Game Saves", "mode": "two-way" },
+        "LAYBACKRIG": { "path": "D:\\Game Saves", "mode": "two-way" }
+      }
+    },
+    {
+      "id": "patreon",
+      "name": "Patreon",
+      "devices": {
+        "CarbonServer": { "path": "C:\\Sync\\Patreon", "mode": "two-way" },
+        "LAYBACKRIG": { "path": "D:\\Patreon", "mode": "two-way" }
+      }
+    }
+  ]
+}

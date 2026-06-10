@@ -1,0 +1,7 @@
+{
+  "role": "spoke",
+  "deviceName": "Kingdel",
+  "token": "REPLACE-WITH-FLEET-TOKEN",
+  "hubUrl": "https://192.168.0.35:21600",
+  "apiPort": 21601
+}
