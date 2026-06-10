@@ -349,7 +349,7 @@ async function createServers(ctx) {
   }
 
   const apiServer = http.createServer(handler);
-  const apiPort = await listen(apiServer, ctx.config.apiPort, '127.0.0.1');
+  const apiPort = await listen(apiServer, ctx.config.apiPort, ctx.config.apiHost || '127.0.0.1');
   servers.push(apiServer);
 
   return {

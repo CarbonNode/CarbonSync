@@ -5,6 +5,7 @@ const path = require('node:path');
 
 const DEFAULTS = {
   apiPort: 21601,          // localhost admin API (CortexAgent probes this)
+  apiHost: '127.0.0.1',    // set 0.0.0.0 on boxes where the CortexAgent runs in Docker (token-authed either way)
   dataPort: 21600,         // hub-only LAN data plane
   tls: true,               // hub data plane TLS (self-signed + TOFU pin)
   pollIntervalMs: 10_000,
