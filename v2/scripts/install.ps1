@@ -1,5 +1,5 @@
 # CarbonSync 2.0 daemon installer (Windows).
-# Designed to be driven remotely from Carbon Cortex via shell-<box>__exec —
+# Designed to be driven remotely from Carbon Cortex via shell-<box>__exec --
 # zero manual PC visits. Node.js must be on PATH (it is on every CortexAgent node).
 #
 #   .\install.ps1 -Role hub                       # on carbonserver
@@ -77,7 +77,7 @@ try {
   $tokenJson = Get-Content (Join-Path $installDir 'mcp-token.json') | ConvertFrom-Json
   $status = Invoke-RestMethod -Uri "http://127.0.0.1:$($tokenJson.apiPort)/v1/status" `
     -Headers @{ Authorization = "Bearer $($tokenJson.token)" } -TimeoutSec 5
-  Write-Host "[carbonsync] OK — $($status.device) ($($status.role)) v$($status.version), $($status.folders.Count) folder(s)"
+  Write-Host "[carbonsync] OK -- $($status.device) ($($status.role)) v$($status.version), $($status.folders.Count) folder(s)"
 } catch {
-  Write-Warning "daemon not answering yet — check $installDir\state\daemon.log ($_)"
+  Write-Warning "daemon not answering yet -- check $installDir\state\daemon.log ($_)"
 }
