@@ -199,3 +199,22 @@ test('localhost admin API: auth required, status and events served', async t => 
   const handshake = await (await fetch(`${base}/v1/handshake`, { headers })).json();
   assert.equal(handshake.pv, 1);
 });
+
+test('idle fleet does NO sync work after convergence (anti-churn regression)', async t => {
+  const { spoke, hubData, spokeData } = await startFleet(t, { folders: [{ id: 'f1' }] });
+  await write(hubData('f1'), 'a.txt', 'x');
+  await write(hubData('f1'), 'deep/b.txt', 'y');
+  await waitForConverged(hubData('f1'), spokeData('f1'), 'seed');
+  await sleep(500); // let post-convergence settling finish
+
+  const evBefore = spoke.eventLog.recent({ limit: 1000 }).length;
+  const before = spoke.getStatus().folders.find(f => f.id === 'f1');
+
+  await sleep(1500); // ~10 poll cycles at 150ms — v1's bug was churn exactly here
+
+  const evAfter = spoke.eventLog.recent({ limit: 1000 }).length;
+  const after = spoke.getStatus().folders.find(f => f.id === 'f1');
+  assert.equal(evAfter, evBefore, 'no new events while idle');
+  assert.equal(after.lastSyncAt, before.lastSyncAt, 'no sync passes ran while idle');
+  assert.equal(after.digest, before.digest, 'index untouched while idle');
+});
