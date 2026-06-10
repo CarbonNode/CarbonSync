@@ -5,7 +5,7 @@ const fsp = require('node:fs/promises');
 const { FolderIndex, EventLog } = require('./db');
 const { loadDeviceId } = require('./ids');
 const { writeMcpTokenFile } = require('./config');
-const { buildIgnore, fullScan, rescanPaths } = require('./scanner');
+const { buildIgnore, fullScan, rescanPaths, rootState } = require('./scanner');
 const { watchFolder } = require('./watcher');
 const { createServers, PROTOCOL_VERSION } = require('./server');
 const { HubClient } = require('./client');
@@ -49,7 +49,7 @@ class Daemon {
     if (cfg.role === 'hub') {
       for (const f of cfg.folders) {
         const a = f.devices[cfg.deviceName];
-        const rt = this._makeRt({
+        const rt = this._makeRtPersisted({
           id: f.id, name: f.name, path: a.path, mode: a.mode,
           excludes: [...(f.excludes || []), ...(a.excludes || [])],
         });
@@ -124,7 +124,7 @@ class Daemon {
       db: new FolderIndex(this.cfg.stateDir, def.id),
       ready: false,
       offline: false,
-      paused: false,
+      paused: false, // restored from db meta below — pause survives restarts (incident 2026-06-10)
       syncing: false,
       guardTripped: false,
       guardHubDigest: null,
@@ -132,6 +132,12 @@ class Daemon {
       lastError: null,
       watcher: null,
     };
+  }
+
+  _makeRtPersisted(def) {
+    const rt = this._makeRt(def);
+    rt.paused = rt.db.getMeta('paused') === '1';
+    return rt;
   }
 
   _chainIo(fn) {
@@ -144,6 +150,7 @@ class Daemon {
   async _scanFolder(rt) {
     if (this._stopped) return null;
     const res = await fullScan(rt.root, rt.db, rt.ig);
+    if (res.transient) return res; // stat hiccup under load — keep current state
     if (res.offline) {
       if (!rt.offline) {
         rt.offline = true;
@@ -179,10 +186,9 @@ class Daemon {
   async _rootWatchdog() {
     if (this._stopped) return;
     for (const rt of this.folders.values()) {
-      let present = false;
-      try {
-        present = (await fsp.stat(rt.root)).isDirectory();
-      } catch { /* missing */ }
+      const state = await rootState(rt.root);
+      if (state === 'unknown') continue; // transient stat error is NOT "missing" (incident 2026-06-10)
+      const present = state === 'present';
       if (rt.ready && !present) {
         this._chainIo(() => this._scanFolder(rt)); // flips offline, closes watcher, NO tombstones
       } else if (rt.offline && present) {
@@ -197,6 +203,7 @@ class Daemon {
   async _onWatch(rt, paths) {
     if (this._stopped || !rt.ready) return;
     const res = await rescanPaths(rt.root, rt.db, rt.ig, paths);
+    if (res.transient) return;
     if (res.offline) {
       await this._chainIo(() => this._scanFolder(rt)); // flips it offline properly
       return;
@@ -312,7 +319,7 @@ class Daemon {
         }
         continue;
       }
-      rt = this._makeRt(a);
+      rt = this._makeRtPersisted(a);
       this.folders.set(a.id, rt);
       this.eventLog.add('info', a.id, 'folder_assigned', null, `${root} (${a.mode})`);
       this._chainIo(async () => {
@@ -395,8 +402,10 @@ class Daemon {
   setPause(id, paused) {
     const rt = this.folders.get(id);
     if (!rt) return;
-    rt.paused = paused;
+    rt.paused = paused; // syncer checks this live mid-pass — pause aborts in-flight work
+    rt.db.setMeta('paused', paused ? '1' : '0');
     this.eventLog.add('info', id, paused ? 'paused' : 'resumed', null, null);
+    if (!paused) this.queueSync(id);
   }
 
   requestRescan(id) {
@@ -442,6 +451,7 @@ class Daemon {
       version: VERSION,
       pv: PROTOCOL_VERSION,
       uptimeSec: Math.round((Date.now() - this.startedAt) / 1000),
+      rssMb: Math.round(process.memoryUsage.rss() / 1024 / 1024),
       folders,
     };
     if (this.cfg.role === 'spoke') {

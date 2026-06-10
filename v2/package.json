@@ -1,6 +1,6 @@
 {
   "name": "carbonsyncd",
-  "version": "2.0.0-alpha.1",
+  "version": "2.0.0-alpha.2",
   "description": "CarbonSync 2.0 — headless LAN file-sync daemon, managed via Carbon Cortex MCP",
   "main": "src/index.js",
   "type": "commonjs",

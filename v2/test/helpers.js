@@ -70,7 +70,7 @@ async function startFleet(t, { folders, hubTweaks = {}, spokeTweaks = {} }) {
     await fsp.rm(base, { recursive: true, force: true });
   });
 
-  return { base, hub, spoke, hubData, spokeData, token: TOKEN };
+  return { base, hub, spoke, hubData, spokeData, spokeCfgPath, token: TOKEN };
 }
 
 async function write(root, rel, content, mtimeMs) {

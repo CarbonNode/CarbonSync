@@ -218,3 +218,75 @@ test('idle fleet does NO sync work after convergence (anti-churn regression)', a
   assert.equal(after.lastSyncAt, before.lastSyncAt, 'no sync passes ran while idle');
   assert.equal(after.digest, before.digest, 'index untouched while idle');
 });
+
+test('additions guard blocks mass transfers until force_sync', async t => {
+  const { hub, spoke, hubData, spokeData } = await startFleet(t, {
+    folders: [{ id: 'f1' }],
+    spokeTweaks: { guardMinAdds: 10 },
+  });
+  // stage ALL files before the spoke can sync, so the plan sees 30 adds at
+  // once (under parallel-suite load the hub watcher may otherwise batch-split)
+  spoke.setPause('f1', true);
+  for (let i = 0; i < 30; i++) await write(hubData('f1'), `f-${i}.txt`, `v${i}`);
+  await waitFor(() => {
+    const h = hub.getStatus().folders.find(f => f.id === 'f1');
+    return h && h.liveCount === 30;
+  }, { desc: 'hub to index all 30' });
+  spoke.setPause('f1', false);
+
+  await waitFor(async () => {
+    const st = spoke.getStatus().folders.find(f => f.id === 'f1');
+    return st && st.guardTripped ? st : false;
+  }, { desc: 'additions guard to trip' });
+  assert.equal((await treeOf(spokeData('f1'))).size, 0, 'nothing transferred while blocked');
+  assert.ok(spoke.eventLog.recent({ limit: 50, folder: 'f1' }).some(e => e.type === 'add_guard'));
+
+  spoke.requestSync('f1', { force: true });
+  const tree = await waitForConverged(hubData('f1'), spokeData('f1'), 'forced transfer');
+  assert.equal(tree.size, 30);
+});
+
+test('pause aborts an in-flight sync and persists across daemon restart', async t => {
+  const { spoke, spokeCfgPath, hubData, spokeData } = await startFleet(t, {
+    folders: [{ id: 'f1' }],
+    spokeTweaks: { transferConcurrency: 1 },
+  });
+  for (let i = 0; i < 1200; i++) await write(hubData('f1'), `d${i % 20}/f-${i}.txt`, `v${i}`);
+
+  // let the pull start, then pause mid-flight
+  await waitFor(async () => (await treeOf(spokeData('f1'))).size > 20, { desc: 'sync to start' });
+  spoke.setPause('f1', true);
+  await waitFor(async () => {
+    const st = spoke.getStatus().folders.find(f => f.id === 'f1');
+    return !st.syncing;
+  }, { desc: 'in-flight sync to abort' });
+
+  const n1 = (await treeOf(spokeData('f1'))).size;
+  assert.ok(n1 < 1200, `abort left a partial copy (${n1}/1200)`);
+  await sleep(800); // several poll cycles
+  const n2 = (await treeOf(spokeData('f1'))).size;
+  assert.equal(n2, n1, 'no further transfers while paused');
+  assert.ok(spoke.eventLog.recent({ limit: 30, folder: 'f1' }).some(e => e.type === 'sync_aborted'));
+
+  // restart the spoke daemon — pause must survive
+  await spoke.stop();
+  const pino = require('pino');
+  const { loadConfig } = require('../src/config');
+  const { Daemon } = require('../src/daemon');
+  const spoke2 = new Daemon(loadConfig(spokeCfgPath), pino({ level: 'silent' }));
+  t.after(() => spoke2.stop().catch(() => {}));
+  await spoke2.start();
+
+  await waitFor(() => {
+    const st = spoke2.getStatus().folders.find(f => f.id === 'f1');
+    return st && st.ready ? st : false;
+  }, { desc: 'restarted spoke folder ready' });
+  assert.equal(spoke2.getStatus().folders[0].paused, true, 'pause survived the restart');
+  await sleep(700);
+  assert.equal((await treeOf(spokeData('f1'))).size, n1, 'still no transfers after restart');
+
+  // resume -> full convergence
+  spoke2.setPause('f1', false);
+  const tree = await waitForConverged(hubData('f1'), spokeData('f1'), 'post-resume convergence');
+  assert.equal(tree.size, 1200);
+});

@@ -22,13 +22,21 @@ function toRel(rel) {
   return rel.split(path.sep).join('/');
 }
 
-async function statRoot(root) {
+/**
+ * 'present' | 'missing' | 'unknown'. Only a definite ENOENT/ENOTDIR means the
+ * root is gone — EBUSY/EPERM under heavy IO must NOT flip a healthy folder
+ * offline (incident 2026-06-10: any stat error counted as missing).
+ */
+async function rootState(root) {
   try {
-    const st = await fsp.stat(root);
-    return st.isDirectory();
-  } catch {
-    return false;
+    return (await fsp.stat(root)).isDirectory() ? 'present' : 'missing';
+  } catch (err) {
+    return err.code === 'ENOENT' || err.code === 'ENOTDIR' ? 'missing' : 'unknown';
   }
+}
+
+async function statRoot(root) {
+  return (await rootState(root)) === 'present';
 }
 
 /**
@@ -39,7 +47,9 @@ async function statRoot(root) {
  * return); the index itself is never materialized.
  */
 async function fullScan(root, db, ig) {
-  if (!(await statRoot(root))) return { offline: true };
+  const state = await rootState(root);
+  if (state === 'unknown') return { transient: true };
+  if (state === 'missing') return { offline: true };
 
   const seen = new Set();
   let batch = [];
@@ -103,7 +113,9 @@ async function fullScan(root, db, ig) {
  * Dir deletions tombstone the whole indexed subtree; dir creations walk it.
  */
 async function rescanPaths(root, db, ig, relPaths) {
-  if (!(await statRoot(root))) return { offline: true };
+  const state = await rootState(root);
+  if (state === 'unknown') return { transient: true };
+  if (state === 'missing') return { offline: true };
 
   const batch = [];
   const gone = [];
@@ -160,4 +172,4 @@ async function collectSubtree(root, relStart, ig) {
   return out;
 }
 
-module.exports = { buildIgnore, fullScan, rescanPaths, DEFAULT_EXCLUDES };
+module.exports = { buildIgnore, fullScan, rescanPaths, rootState, DEFAULT_EXCLUDES };

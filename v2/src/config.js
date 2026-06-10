@@ -16,6 +16,9 @@ const DEFAULTS = {
   transferConcurrency: 2,
   guardMinDeletes: 50,     // delete-fraction guard: max(min, fraction*live)
   guardFraction: 0.25,
+  guardMinAdds: 5000,      // additions guard: a sync planning more transfers than this blocks until force_sync
+  guardAddBytes: 10 * 1024 * 1024 * 1024,
+  diskFloorBytes: 2 * 1024 * 1024 * 1024, // refuse pulls that would leave less than this free
   tombstoneTtlMs: 30 * 24 * 60 * 60 * 1000,
 };
 

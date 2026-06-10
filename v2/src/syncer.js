@@ -75,7 +75,7 @@ function localOnly(mode, l) {
 function hubOnly(mode, h) {
   if (h.deleted) return null;
   if (mode === 'push') return { type: 'delHub', path: h.path };
-  return { type: 'pull', path: h.path };
+  return { type: 'pull', path: h.path, size: h.size };
 }
 
 function bothSides(mode, l, h) {
@@ -88,29 +88,29 @@ function bothSides(mode, l, h) {
       }
       return null;
     }
-    if (mode === 'pull') return { type: 'pull', path: l.path };
+    if (mode === 'pull') return { type: 'pull', path: l.path, size: h.size };
     if (mode === 'push') return { type: 'push', path: l.path, size: l.size, mtimeMs: l.mtimeMs };
 
     const localChanged = !markersMatch(l, l.size, l.mtimeMs);
     const hubChanged = !markersMatch(l, h.size, h.mtimeMs);
     if (localChanged && !hubChanged) return { type: 'push', path: l.path, size: l.size, mtimeMs: l.mtimeMs };
-    if (!localChanged && hubChanged) return { type: 'pull', path: l.path };
+    if (!localChanged && hubChanged) return { type: 'pull', path: l.path, size: h.size };
 
     // Changed on both sides since last sync (or never synced): last writer
     // wins; the losing copy is always preserved as a *.conflict-* file.
     if (l.mtimeMs > h.mtimeMs + MTIME_BUCKET_MS) {
       return { type: 'push', path: l.path, size: l.size, mtimeMs: l.mtimeMs, conflictBackup: true, conflict: true };
     }
-    return { type: 'pull', path: l.path, conflictCopy: true, conflict: true };
+    return { type: 'pull', path: l.path, size: h.size, conflictCopy: true, conflict: true };
   }
 
   if (l.deleted && !h.deleted) {
     // Local tombstone vs hub live file.
-    if (mode === 'pull') return { type: 'pull', path: l.path };
+    if (mode === 'pull') return { type: 'pull', path: l.path, size: h.size };
     if (mode === 'push') return { type: 'delHub', path: l.path };
     const hubChanged = !markersMatch(l, h.size, h.mtimeMs);
     return hubChanged
-      ? { type: 'pull', path: l.path } // hub changed after our delete -> resurrect
+      ? { type: 'pull', path: l.path, size: h.size } // hub changed after our delete -> resurrect
       : { type: 'delHub', path: l.path };
   }
 
@@ -194,14 +194,16 @@ async function syncFolder(rt, hub, cfg, eventLog, log, { force = false, deviceNa
   const t0 = Date.now();
 
   // ---- pass 1: plan ----
-  const plan = { pull: 0, push: 0, delLocal: 0, delHub: 0, markSynced: 0, conflicts: 0 };
+  const plan = { pull: 0, push: 0, delLocal: 0, delHub: 0, markSynced: 0, conflicts: 0, pullBytes: 0, pushBytes: 0 };
   for await (const op of mergeOps(rt, hub, cfg.pageSize)) {
     plan[op.type]++;
     if (op.conflict) plan.conflicts++;
+    if (op.type === 'pull') plan.pullBytes += op.size || 0;
+    if (op.type === 'push') plan.pushBytes += op.size || 0;
   }
 
-  // ---- delete-fraction guard (the "empty side nukes everyone" classic) ----
   if (!force) {
+    // ---- delete-fraction guard (the "empty side nukes everyone" classic) ----
     const localLive = rt.db.liveCount();
     const localLimit = Math.max(cfg.guardMinDeletes, Math.ceil(cfg.guardFraction * Math.max(1, localLive)));
     let hubLimit = Infinity;
@@ -215,6 +217,31 @@ async function syncFolder(rt, hub, cfg, eventLog, log, { force = false, deviceNa
       eventLog.add('error', rt.id, 'delete_guard', null, detail);
       log.error({ folder: rt.id, plan }, 'delete guard tripped');
       return { blocked: true, plan };
+    }
+
+    // ---- additions guard (incident 2026-06-10: 148 GB walked onto the hub
+    // unchallenged — mass transfers need the same confirm as mass deletes) ----
+    const adds = plan.pull + plan.push;
+    const addBytes = plan.pullBytes + plan.pushBytes;
+    if (adds > cfg.guardMinAdds || addBytes > cfg.guardAddBytes) {
+      rt.guardTripped = true;
+      const detail = `would transfer ${adds} files / ${(addBytes / 1024 / 1024 / 1024).toFixed(2)} GB (pull=${plan.pull} push=${plan.push}); use force_sync to apply`;
+      eventLog.add('error', rt.id, 'add_guard', null, detail);
+      log.error({ folder: rt.id, plan }, 'additions guard tripped');
+      return { blocked: true, plan };
+    }
+
+    // ---- free-disk guard (incident: kingdel pulled to ENOSPC) ----
+    if (plan.pullBytes > 0) {
+      const st = await fsp.statfs(rt.root).catch(() => null);
+      if (st && plan.pullBytes + cfg.diskFloorBytes > st.bavail * st.bsize) {
+        rt.guardTripped = true;
+        const freeGb = (st.bavail * st.bsize / 1024 / 1024 / 1024).toFixed(1);
+        eventLog.add('error', rt.id, 'disk_guard', null,
+          `pull needs ${(plan.pullBytes / 1024 / 1024 / 1024).toFixed(2)} GB but only ${freeGb} GB free (floor ${(cfg.diskFloorBytes / 1024 / 1024 / 1024).toFixed(0)} GB); free space or force_sync`);
+        log.error({ folder: rt.id }, 'disk guard tripped');
+        return { blocked: true, plan };
+      }
     }
   }
   rt.guardTripped = false;
@@ -239,12 +266,19 @@ async function syncFolder(rt, hub, cfg, eventLog, log, { force = false, deviceNa
     running.add(p);
   };
 
+  let aborted = false;
   for await (const op of mergeOps(rt, hub, cfg.pageSize)) {
+    if (rt.paused) { aborted = true; break; } // pause must stop an IN-FLIGHT sync (incident 2026-06-10)
     if (errors.length > 50) break; // something is systemically wrong; stop digging
     launch(op);
     if (running.size >= cfg.transferConcurrency) await Promise.race(running);
   }
   await Promise.all(running);
+
+  if (aborted) {
+    eventLog.add('warn', rt.id, 'sync_aborted', null, 'paused mid-sync — digests left unsettled, resync on resume');
+    return { blocked: false, aborted: true, plan, errors };
+  }
 
   // ---- settle digests for the idle gate ----
   rt.db.setMeta('lastLocalDigest', rt.db.digest().hex);
