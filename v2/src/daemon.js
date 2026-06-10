@@ -1,7 +1,11 @@
 'use strict';
 
 const path = require('node:path');
+const fs = require('node:fs');
 const fsp = require('node:fs/promises');
+const { execFile } = require('node:child_process');
+const { promisify } = require('node:util');
+const execFileP = promisify(execFile);
 const { FolderIndex, EventLog } = require('./db');
 const { loadDeviceId } = require('./ids');
 const { writeMcpTokenFile } = require('./config');
@@ -15,6 +19,32 @@ const VERSION = require('../package.json').version;
 const PURGE_INTERVAL_MS = 6 * 60 * 60 * 1000;
 const MAX_POLL_BACKOFF_MS = 60_000;
 const COMMAND_QUEUE_CAP = 100;
+
+function semverCmp(a, b) {
+  const parse = v => {
+    const [core, pre = ''] = String(v).split('-');
+    return { nums: core.split('.').map(n => parseInt(n, 10) || 0), pre };
+  };
+  const A = parse(a), B = parse(b);
+  for (let i = 0; i < 3; i++) {
+    if ((A.nums[i] || 0) !== (B.nums[i] || 0)) return (A.nums[i] || 0) - (B.nums[i] || 0);
+  }
+  if (A.pre === B.pre) return 0;
+  if (!A.pre) return 1; // release > prerelease
+  if (!B.pre) return -1;
+  // alpha.10 > alpha.2: compare dot-segments numerically when both numeric
+  const as = A.pre.split('.'), bs = B.pre.split('.');
+  for (let i = 0; i < Math.max(as.length, bs.length); i++) {
+    const x = as[i], y = bs[i];
+    if (x === y) continue;
+    if (x === undefined) return -1;
+    if (y === undefined) return 1;
+    const xn = /^\d+$/.test(x), yn = /^\d+$/.test(y);
+    if (xn && yn) return parseInt(x, 10) - parseInt(y, 10);
+    return x < y ? -1 : 1;
+  }
+  return 0;
+}
 
 function jitter(ms) {
   return Math.round(ms * (0.85 + Math.random() * 0.3));
@@ -38,6 +68,7 @@ class Daemon {
     this._pollFailing = false;
     this._selfHub = false;
     this._backoff = cfg.pollIntervalMs;
+    this._exit = code => process.exit(code); // injectable for tests
   }
 
   async start() {
@@ -74,6 +105,9 @@ class Daemon {
       requestRescan: id => this.requestRescan(id),
       enqueueCommand: (dev, cmd) => this.enqueueCommand(dev, cmd),
       drainCommands: dev => this.drainCommands(dev),
+      topology: (action, params) => this.topology(action, params),
+      requestRestart: reason => this.requestRestart(reason),
+      requestSelfUpdate: () => this.requestSelfUpdate(),
     });
 
     if (cfg.role === 'spoke') {
@@ -429,6 +463,160 @@ class Daemon {
     const q = this.commandQueue.get(device) || [];
     this.commandQueue.delete(device);
     return q;
+  }
+
+  // ---- full-MCP control: topology / lifecycle ----
+
+  /** Hub-only. Mutates folder topology, persists config, applies live.
+   *  Spokes pick the change up on their next poll. Indexes/data are NEVER
+   *  deleted by topology changes — removal only stops managing. */
+  async topology(action, p = {}) {
+    if (this.cfg.role !== 'hub') throw new Error('topology tools are hub-only');
+    const SLUG = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
+    const MODES = ['two-way', 'pull', 'push'];
+    const folders = this.cfg.folders;
+    const find = id => folders.find(f => f.id === id);
+    const needFolder = id => {
+      const f = find(id);
+      if (!f) throw new Error(`unknown folder ${id}`);
+      return f;
+    };
+
+    switch (action) {
+      case 'add_folder': {
+        if (typeof p.id !== 'string' || !SLUG.test(p.id)) throw new Error('id must be a slug (letters/digits/dash/underscore)');
+        if (find(p.id)) throw new Error(`folder ${p.id} already exists`);
+        if (typeof p.hubPath !== 'string' || !p.hubPath) throw new Error('hubPath required (the hub holds a copy of every folder)');
+        const mode = p.mode || 'two-way';
+        if (!MODES.includes(mode)) throw new Error(`bad mode ${p.mode}`);
+        const def = { id: p.id, name: p.name || p.id, devices: { [this.cfg.deviceName]: { path: p.hubPath, mode } } };
+        if (Array.isArray(p.excludes)) def.excludes = p.excludes;
+        folders.push(def);
+        break;
+      }
+      case 'remove_folder': {
+        const f = needFolder(p.folder);
+        folders.splice(folders.indexOf(f), 1);
+        break;
+      }
+      case 'assign_device': {
+        const f = needFolder(p.folder);
+        if (typeof p.device !== 'string' || !SLUG.test(p.device)) throw new Error('device must be a slug');
+        if (typeof p.path !== 'string' || !p.path) throw new Error('path required');
+        const mode = p.mode || (f.devices[p.device] && f.devices[p.device].mode) || 'two-way';
+        if (!MODES.includes(mode)) throw new Error(`bad mode ${p.mode}`);
+        const a = { path: p.path, mode };
+        if (Array.isArray(p.excludes)) a.excludes = p.excludes;
+        f.devices[p.device] = a;
+        break;
+      }
+      case 'unassign_device': {
+        const f = needFolder(p.folder);
+        if (!f.devices[p.device]) throw new Error(`${p.device} is not assigned to ${p.folder}`);
+        if (p.device === this.cfg.deviceName) throw new Error('the hub holds every folder — use remove_folder instead');
+        delete f.devices[p.device];
+        break;
+      }
+      case 'set_mode': {
+        const f = needFolder(p.folder);
+        const a = f.devices[p.device];
+        if (!a) throw new Error(`${p.device} is not assigned to ${p.folder}`);
+        if (!MODES.includes(p.mode)) throw new Error(`bad mode ${p.mode}`);
+        a.mode = p.mode;
+        break;
+      }
+      case 'set_excludes': {
+        const f = needFolder(p.folder);
+        if (!Array.isArray(p.excludes)) throw new Error('excludes must be an array of gitignore-style patterns');
+        if (p.device) {
+          const a = f.devices[p.device];
+          if (!a) throw new Error(`${p.device} is not assigned to ${p.folder}`);
+          a.excludes = p.excludes;
+        } else {
+          f.excludes = p.excludes;
+        }
+        break;
+      }
+      default:
+        throw new Error(`unknown topology action ${action}`);
+    }
+
+    this._persistConfig();
+    await this._reconcileHubFolders();
+    this.eventLog.add('info', p.folder || p.id || null, 'topology', null, `${action} ${JSON.stringify(p).slice(0, 300)}`);
+    return {
+      ok: true,
+      folders: folders.map(f => ({ id: f.id, name: f.name, devices: Object.fromEntries(Object.entries(f.devices).map(([d, a]) => [d, { path: a.path, mode: a.mode }])) })),
+    };
+  }
+
+  _persistConfig() {
+    const tmp = this.cfg.configPath + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(this.cfg._raw, null, 2) + '\n');
+    fs.renameSync(tmp, this.cfg.configPath);
+  }
+
+  /** Diff cfg.folders against running hub rts and apply (same idea as the spoke's poll reconcile). */
+  async _reconcileHubFolders() {
+    const wanted = new Map(this.cfg.folders.map(f => [f.id, f]));
+    for (const [id, rt] of this.folders) {
+      if (wanted.has(id)) continue;
+      this.folders.delete(id);
+      if (rt.watcher) await rt.watcher.close().catch(() => {});
+      rt.db.close();
+      this.eventLog.add('info', id, 'folder_removed', null, 'index retained, data untouched');
+    }
+    for (const [id, f] of wanted) {
+      const a = f.devices[this.cfg.deviceName];
+      if (!a) continue;
+      const root = path.resolve(a.path);
+      const excludes = [...(f.excludes || []), ...(a.excludes || [])];
+      let rt = this.folders.get(id);
+      if (!rt) {
+        rt = this._makeRtPersisted({ id, name: f.name, path: a.path, mode: a.mode, excludes });
+        this.folders.set(id, rt);
+        this._chainIo(() => this._scanFolder(rt));
+        continue;
+      }
+      rt.name = f.name;
+      rt.mode = a.mode;
+      rt.ig = buildIgnore(excludes);
+      if (rt.root !== root) {
+        if (rt.watcher) {
+          await rt.watcher.close().catch(() => {});
+          rt.watcher = null;
+        }
+        rt.root = root;
+        rt.ready = false;
+        this._chainIo(() => this._scanFolder(rt));
+      }
+    }
+  }
+
+  /** Clean exit with code 2 — the scheduled task's restart-on-failure policy revives us. */
+  requestRestart(reason) {
+    this.eventLog.add('warn', null, 'restart', null, reason || 'requested via API');
+    this.log.warn({ reason }, 'restart requested — exiting for task-scheduler revive');
+    setTimeout(() => this._exit(2), 400).unref();
+  }
+
+  /** Code-only self-update from the local git clone (strictly-no-downgrade),
+   *  then restart. Dependency changes still need install.ps1 — node_modules
+   *  is not touched (native addons are locked while loaded). */
+  async requestSelfUpdate() {
+    const repo = this.cfg.repoDir;
+    if (!repo || !fs.existsSync(path.join(repo, '.git'))) throw new Error(`repoDir is not a git clone: ${repo}`);
+    const v2dir = path.join(repo, 'v2');
+    await execFileP('git', ['-C', repo, 'pull', '--ff-only'], { timeout: 120_000 });
+    const pkg = JSON.parse(fs.readFileSync(path.join(v2dir, 'package.json'), 'utf8'));
+    if (semverCmp(pkg.version, VERSION) < 0) throw new Error(`repo has ${pkg.version} < running ${VERSION} — refusing downgrade`);
+    const installDir = path.resolve(__dirname, '..');
+    fs.cpSync(path.join(v2dir, 'src'), path.join(installDir, 'src'), { recursive: true, force: true });
+    fs.copyFileSync(path.join(v2dir, 'package.json'), path.join(installDir, 'package.json'));
+    this.eventLog.add('warn', null, 'self_update', null, `${VERSION} -> ${pkg.version}; restarting`);
+    this.log.warn({ from: VERSION, to: pkg.version }, 'self-update applied — restarting');
+    setTimeout(() => this._exit(2), 600).unref();
+    return { ok: true, from: VERSION, to: pkg.version, restarting: true };
   }
 
   getStatus() {

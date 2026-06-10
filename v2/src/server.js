@@ -170,6 +170,19 @@ function createHandler(ctx) {
         ctx.setPause(body.folder, !!body.paused);
         return send(res, 200, { ok: true });
       }
+      if (route === 'restart' && req.method === 'POST') {
+        send(res, 200, { ok: true, restarting: true });
+        ctx.requestRestart('api request');
+        return;
+      }
+      if (route === 'self_update' && req.method === 'POST') {
+        return send(res, 200, await ctx.requestSelfUpdate());
+      }
+      if (route === 'topology' && req.method === 'POST') {
+        if (ctx.role !== 'hub') return send(res, 400, { error: 'topology tools are hub-only' });
+        const body = await readJson(req);
+        return send(res, 200, await ctx.topology(parts[2], body));
+      }
       if (route === 'rescan' && req.method === 'POST') {
         const body = await readJson(req);
         ctx.requestRescan(body.folder || null);

@@ -225,7 +225,10 @@ test('additions guard blocks mass transfers until force_sync', async t => {
     spokeTweaks: { guardMinAdds: 10 },
   });
   // stage ALL files before the spoke can sync, so the plan sees 30 adds at
-  // once (under parallel-suite load the hub watcher may otherwise batch-split)
+  // once (under parallel-suite load the hub watcher may otherwise batch-split).
+  // The pause must land AFTER the assignment exists — setPause on an
+  // unassigned folder is a no-op.
+  await waitFor(() => spoke.getStatus().folders.find(f => f.id === 'f1'), { desc: 'spoke to receive assignment' });
   spoke.setPause('f1', true);
   for (let i = 0; i < 30; i++) await write(hubData('f1'), `f-${i}.txt`, `v${i}`);
   await waitFor(() => {
@@ -289,4 +292,50 @@ test('pause aborts an in-flight sync and persists across daemon restart', async 
   spoke2.setPause('f1', false);
   const tree = await waitForConverged(hubData('f1'), spokeData('f1'), 'post-resume convergence');
   assert.equal(tree.size, 1200);
+});
+
+test('hub topology tools: add, assign, persist, set_mode, unassign, remove — all live, data untouched', async t => {
+  const fs = require('node:fs');
+  const { base, hub, spoke } = await startFleet(t, { folders: [{ id: 'f1' }] });
+  const api = `http://127.0.0.1:${hub.servers.apiPort}`;
+  const H = { authorization: `Bearer ${TOKEN}`, 'content-type': 'application/json' };
+  const call = async (p, body) => {
+    const r = await fetch(api + p, { method: 'POST', headers: H, body: JSON.stringify(body) });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error);
+    return j;
+  };
+
+  const hubRoot2 = path.join(base, 'data', 'hub', 'f2');
+  const spokeRoot2 = path.join(base, 'data', 'spoke', 'f2');
+  await fsp.mkdir(hubRoot2, { recursive: true });
+  await fsp.mkdir(spokeRoot2, { recursive: true });
+  await write(hubRoot2, 'x.txt', 'topology!');
+
+  await call('/v1/topology/add_folder', { id: 'f2', hubPath: hubRoot2 });
+  await call('/v1/topology/assign_device', { folder: 'f2', device: 'spoke1', path: spokeRoot2 });
+
+  // spoke discovers + syncs the new folder with zero restarts anywhere
+  await waitFor(async () => (await treeOf(spokeRoot2)).get('x.txt') === 'topology!', { desc: 'new folder to sync via topology tools' });
+
+  // survives a hub restart: persisted to config.json
+  const onDisk = JSON.parse(fs.readFileSync(path.join(base, 'hub', 'config.json'), 'utf8'));
+  const f2 = onDisk.folders.find(f => f.id === 'f2');
+  assert.ok(f2 && f2.devices.spoke1, 'topology persisted to config file');
+
+  await call('/v1/topology/set_mode', { folder: 'f2', device: 'spoke1', mode: 'pull' });
+  await call('/v1/topology/unassign_device', { folder: 'f2', device: 'spoke1' });
+  await waitFor(() => !spoke.getStatus().folders.find(f => f.id === 'f2'), { desc: 'spoke to drop unassigned folder' });
+
+  await call('/v1/topology/remove_folder', { folder: 'f2' });
+  await waitFor(() => !hub.getStatus().folders.find(f => f.id === 'f2'), { desc: 'hub to drop removed folder' });
+  assert.equal((await treeOf(hubRoot2)).get('x.txt'), 'topology!', 'removal never touches data');
+  assert.equal((await treeOf(spokeRoot2)).get('x.txt'), 'topology!', 'unassign never touches data');
+
+  // guardrails: spoke rejects topology; hub rejects junk
+  const spokeApi = `http://127.0.0.1:${spoke.servers.apiPort}`;
+  const r1 = await fetch(`${spokeApi}/v1/topology/add_folder`, { method: 'POST', headers: H, body: '{}' });
+  assert.equal(r1.status, 400);
+  await assert.rejects(call('/v1/topology/add_folder', { id: 'bad id!', hubPath: '/x' }), /slug/);
+  await assert.rejects(call('/v1/topology/set_mode', { folder: 'f1', device: 'spoke1', mode: 'sideways' }), /bad mode/);
 });

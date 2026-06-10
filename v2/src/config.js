@@ -20,6 +20,7 @@ const DEFAULTS = {
   guardAddBytes: 10 * 1024 * 1024 * 1024,
   diskFloorBytes: 2 * 1024 * 1024 * 1024, // refuse pulls that would leave less than this free
   tombstoneTtlMs: 30 * 24 * 60 * 60 * 1000,
+  repoDir: process.platform === 'win32' ? 'C:\\Programming\\CarbonSync' : null, // git clone self_update pulls from
 };
 
 const SLUG_RE = /^[a-zA-Z0-9][a-zA-Z0-9_-]*$/;
@@ -43,6 +44,7 @@ function loadConfig(configPath) {
   }
 
   const cfg = { ...DEFAULTS, ...data };
+  cfg._raw = data; // original file shape — topology tools persist THIS, not the defaults-merged view
   cfg.configPath = path.resolve(configPath);
   cfg.baseDir = path.dirname(cfg.configPath);
   cfg.stateDir = data.stateDir ? path.resolve(data.stateDir) : path.join(cfg.baseDir, 'state');
