@@ -33,8 +33,10 @@ if (Test-Path (Join-Path $SourceDir 'package-lock.json')) {
 Push-Location $installDir
 try {
   Write-Host '[carbonsync] installing dependencies...'
-  if (Test-Path (Join-Path $installDir 'package-lock.json')) { & npm ci --omit=dev --no-audit --no-fund }
-  else { & npm install --omit=dev --no-audit --no-fund }
+  # npm.cmd explicitly: PowerShell prefers the npm.ps1 shim under '&', and on
+  # some boxes (kingdel) that shim mangles argv ('npm ci' arrives as 'pm').
+  if (Test-Path (Join-Path $installDir 'package-lock.json')) { & npm.cmd ci --omit=dev --no-audit --no-fund }
+  else { & npm.cmd install --omit=dev --no-audit --no-fund }
   if ($LASTEXITCODE -ne 0) { throw "npm install failed ($LASTEXITCODE)" }
 
   if (-not (Test-Path $cfgPath)) {
