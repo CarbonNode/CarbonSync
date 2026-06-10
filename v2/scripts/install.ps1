@@ -30,6 +30,16 @@ if (Test-Path (Join-Path $SourceDir 'package-lock.json')) {
   Copy-Item -Force (Join-Path $SourceDir 'package-lock.json') $installDir
 }
 
+# Stop the daemon BEFORE npm ci: the loaded native addons (better-sqlite3,
+# @parcel/watcher .node files) are locked by Windows while the process runs,
+# and npm ci's node_modules wipe hits EPERM. The task restart below revives it.
+Write-Host '[carbonsync] stopping daemon for dependency install...'
+Stop-ScheduledTask -TaskName $taskName -ErrorAction SilentlyContinue
+Get-CimInstance Win32_Process -Filter "Name = 'node.exe'" -ErrorAction SilentlyContinue |
+  Where-Object { $_.CommandLine -match 'CarbonSync\\src' } |
+  ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+Start-Sleep -Seconds 1
+
 Push-Location $installDir
 try {
   Write-Host '[carbonsync] installing dependencies...'
