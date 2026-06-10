@@ -11,10 +11,11 @@ param(
   [string]$HubUrl,
   [string]$Token,
   [string]$Name,
-  # repo's v2/ dir (default: this script's parent's parent)
-  [string]$SourceDir = (Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path))
+  # repo's v2/ dir (default: this script's parent dir's parent)
+  [string]$SourceDir = ''
 )
 $ErrorActionPreference = 'Stop'
+if (-not $SourceDir) { $SourceDir = Split-Path -Parent $PSScriptRoot }
 
 $installDir = Join-Path $env:ProgramData 'CarbonSync'
 $cfgPath = Join-Path $installDir 'config.json'
