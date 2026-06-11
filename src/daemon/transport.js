@@ -94,6 +94,65 @@ function streamFileToSocket(socket, filePath, meta, chunkSize = 512 * 1024) {
   });
 }
 
+/**
+ * Send a file's bytes as a sequence of binary frames with REAL backpressure:
+ * the read stream pauses while the socket buffer is full, so sender memory is
+ * O(chunkSize) no matter how large the file is. The caller wraps this with its
+ * own metadata / 'transfer_end' frames. Wire-compatible with every existing
+ * receiver — binary frames are already accumulated until 'transfer_end'.
+ *
+ * Replaces the readFile()+single-giant-frame sends that (a) held entire files
+ * on the heap (the 3.7 GB OOM pushing Patreon, 2026-06-10) and (b) produced
+ * frames over MAX_FRAME_SIZE for files >256 MB, which the peer's FrameParser
+ * rejects by destroying the socket — making those files permanently unsyncable
+ * and turning the 15s quick-sync into an infinite re-push loop.
+ */
+function sendFileAsBinaryFrames(socket, filePath, chunkSize = 512 * 1024) {
+  return new Promise((resolve, reject) => {
+    if (!socket || socket.destroyed) return reject(new Error('Socket closed'));
+    const stream = fs.createReadStream(filePath, { highWaterMark: chunkSize });
+    let bytesSent = 0;
+    let settled = false;
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      stream.destroy();
+      socket.removeListener('error', fail);
+      reject(err);
+    };
+    stream.on('data', (chunk) => {
+      const header = Buffer.alloc(5);
+      header.writeUInt32BE(chunk.length + 1);
+      header[4] = 0xFF;
+      const ok = socket.write(Buffer.concat([header, chunk]));
+      bytesSent += chunk.length;
+      if (!ok) {
+        stream.pause();
+        socket.once('drain', () => stream.resume());
+      }
+    });
+    stream.on('end', () => {
+      if (settled) return;
+      settled = true;
+      socket.removeListener('error', fail);
+      resolve(bytesSent);
+    });
+    stream.on('error', fail);
+    socket.on('error', fail);
+  });
+}
+
+/** sha256 of a file via stream — no whole-file buffer. */
+function hashFileSha256(filePath) {
+  return new Promise((resolve, reject) => {
+    const h = crypto.createHash('sha256');
+    const s = fs.createReadStream(filePath);
+    s.on('data', (d) => h.update(d));
+    s.on('end', () => resolve(h.digest('hex')));
+    s.on('error', reject);
+  });
+}
+
 // ---- Frame Parser ----
 
 class FrameParser extends EventEmitter {
@@ -500,4 +559,4 @@ class SyncClient extends EventEmitter {
   }
 }
 
-module.exports = { SyncServer, SyncClient, writeFrame, streamFileToSocket, FrameParser };
+module.exports = { SyncServer, SyncClient, writeFrame, streamFileToSocket, sendFileAsBinaryFrames, hashFileSha256, FrameParser };

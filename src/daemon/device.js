@@ -20,7 +20,7 @@ const crypto = require('crypto');
 const { EventEmitter } = require('events');
 const { Config } = require('./config');
 const { SyncEngine } = require('./sync-engine');
-const { SyncServer, SyncClient, writeFrame, streamFileToSocket } = require('./transport');
+const { SyncServer, SyncClient, writeFrame, streamFileToSocket, sendFileAsBinaryFrames, hashFileSha256 } = require('./transport');
 const { Discovery } = require('./discovery');
 const { ensureFirewallRule } = require('./firewall');
 const { ensureCerts } = require('./tls-certs');
@@ -340,10 +340,12 @@ class CarbonSyncDevice extends EventEmitter {
    * @returns {Promise<boolean>} true → caller should proceed with the rename.
    *                             false → guard tripped, caller must return early.
    */
-  async _checkShrinkOverwrite({ folderConfig, folderName, absPath, relPath, tmpPath, fileData, peerName }) {
+  async _checkShrinkOverwrite({ folderConfig, folderName, absPath, relPath, tmpPath, fileData, incomingSize: incomingSizeArg, spoolPath, peerName }) {
     const existingStat = await fsp.stat(absPath).catch(() => null);
     const existingSize = existingStat ? existingStat.size : null;
-    const incomingSize = fileData ? fileData.length : 0;
+    // Callers pass either the incoming bytes (fileData) or — for disk-spooled
+    // transfers that never hold the file in memory — its size + spool path.
+    const incomingSize = fileData ? fileData.length : (incomingSizeArg ?? 0);
 
     const verdict = classifyOverwrite({
       existingSize,
@@ -363,6 +365,7 @@ class CarbonSyncDevice extends EventEmitter {
     try {
       await fsp.mkdir(path.dirname(conflictPath), { recursive: true });
       if (fileData) await fsp.writeFile(conflictPath, fileData);
+      else if (spoolPath) await fsp.copyFile(spoolPath, conflictPath);
     } catch (err) {
       console.warn(`Shrink-guard sidecar write failed [${conflictPath}]: ${err.message}`);
     }
@@ -418,6 +421,9 @@ class CarbonSyncDevice extends EventEmitter {
     this.engine.on('scan-progress', (p) => this.emit('progress', p));
 
     this.engine.on('changes', ({ folder, changes }) => {
+      // A real local change resets any push backoff for this folder — the
+      // backoff exists to stop retry grinding on a folder that ISN'T changing.
+      this._clearPushBackoff(folder);
       // Match by engine name OR by path (engine name may have hash suffix)
       const engineFolder = this.engine?.folders.get(folder);
       const folderConfig = this.config.folders.find(f => f.name === folder) ||
@@ -626,6 +632,14 @@ class CarbonSyncDevice extends EventEmitter {
 
     this.transport.on('client-disconnected', (c) => {
       console.log(`Client disconnected: ${c.deviceName || 'unknown'}`);
+      // Abort any half-received push: close the spool stream and remove the
+      // .carbonsync.tmp so a dropped transfer can't leave orphans behind.
+      if (c._pushPending) {
+        const p = c._pushPending;
+        c._pushPending = null;
+        try { p.stream?.destroy(); } catch {}
+        if (p.tmpPath) fsp.unlink(p.tmpPath).catch(() => {});
+      }
       this.emit('client-disconnected', { deviceName: c.deviceName });
     });
 
@@ -684,19 +698,28 @@ class CarbonSyncDevice extends EventEmitter {
         const alreadySynced = this.config.folders.some(f => path.resolve(f.path) === path.resolve(gameSavesDir));
         if (!alreadySynced) {
           try {
+            // Policy (2026-06-10): folders NEVER sync by default. The entry is
+            // registered so it shows up ready to enable, but stays disabled
+            // until the user explicitly opts in (settings.gameSaveAutoSync or
+            // the UI/MCP enable). Existing configs are untouched.
+            const autoEnable = this.config.data.settings?.gameSaveAutoSync === true;
             this.config.data.folders.push({
               path: path.resolve(gameSavesDir),
               name: 'Game Saves',
               ignorePatterns: [],
               excludes: [],
               direction: 'both',
-              enabled: true,
+              enabled: autoEnable,
               internal: true, // Hidden from Folders tab UI
             });
             this.config.save();
-            this.engine.addFolder(this.config.folders.find(f => f.name === 'Game Saves'));
-            await this.engine.rescan('Game Saves');
-            console.log('Auto-registered game-saves folder for sync');
+            if (autoEnable) {
+              this.engine.addFolder(this.config.folders.find(f => f.name === 'Game Saves'));
+              await this.engine.rescan('Game Saves');
+              console.log('Auto-registered game-saves folder for sync');
+            } else {
+              console.log('game-saves registered DISABLED (no default sync — set settings.gameSaveAutoSync=true or enable explicitly)');
+            }
           } catch (err) {
             console.error('Failed to auto-register game-saves:', err.message);
           }
@@ -1057,7 +1080,7 @@ class CarbonSyncDevice extends EventEmitter {
       try {
         // For 'both', push BEFORE pull: a stale peer index would otherwise
         // make pull infer "delete" for files we just added locally.
-        if (dir === 'push' || dir === 'both') {
+        if ((dir === 'push' || dir === 'both') && !this._pushBackoffActive(peerInfo, folder.name)) {
           console.log(`Pushing ${folder.name} to ${peerInfo.deviceName}...`);
           await this._pushFullFolderToPeer(peerInfo, folder);
         }
@@ -1162,6 +1185,8 @@ class CarbonSyncDevice extends EventEmitter {
     const logMsg = `[${new Date().toISOString()}] FULL PUSH: ${needed.length} files for ${folder.name} to ${peerInfo.deviceName}`;
     try { fs.appendFileSync(path.join(this.configDir, 'sync.log'), logMsg + '\n'); } catch {}
 
+    let pushedCount = 0;
+    let failedCount = 0;
     for (const relPath of needed) {
       try {
         const absPath = path.join(engineFolder.path, relPath);
@@ -1169,14 +1194,14 @@ class CarbonSyncDevice extends EventEmitter {
         try { stat = await fsp.stat(absPath); } catch { continue; }
         if (!stat.isFile()) continue;
 
-        const data = await fsp.readFile(absPath);
-        const hash = crypto.createHash('sha256').update(data).digest('hex');
+        // Stream the hash and the bytes — never the whole file on the heap.
+        const hash = await hashFileSha256(absPath);
 
         const resp = await peerInfo.client.request({
           type: MSG.FILE_PUSH,
           folder: folder.name,
           path: relPath,
-          size: data.length,
+          size: stat.size,
           hash,
           mtime_ms: Math.floor(stat.mtimeMs),
         }, 30000);
@@ -1185,6 +1210,7 @@ class CarbonSyncDevice extends EventEmitter {
           console.error(`FULL PUSH rejected [${relPath}]: ${resp.message}`);
           const errLog = `[${new Date().toISOString()}] PUSH REJECTED: ${relPath} → ${peerInfo.deviceName}: ${resp.message}`;
           try { fs.appendFileSync(path.join(this.configDir, 'sync.log'), errLog + '\n'); } catch {}
+          failedCount++;
           continue;
         }
         if (resp.status === 'skip') {
@@ -1195,13 +1221,11 @@ class CarbonSyncDevice extends EventEmitter {
           continue;
         }
 
-        const header = Buffer.alloc(5);
-        header.writeUInt32BE(data.length + 1);
-        header[4] = 0xFF;
-        peerInfo.client.socket.write(Buffer.concat([header, data]));
+        const bytesSent = await sendFileAsBinaryFrames(peerInfo.client.socket, absPath);
         writeFrame(peerInfo.client.socket, {
-          type: 'transfer_end', folder: folder.name, path: relPath, bytesSent: data.length,
+          type: 'transfer_end', folder: folder.name, path: relPath, bytesSent,
         });
+        pushedCount++;
 
         // Successful push — peer now has this file at this hash.
         if (peerId) {
@@ -1212,6 +1236,7 @@ class CarbonSyncDevice extends EventEmitter {
         await new Promise(r => setTimeout(r, 50));
       } catch (err) {
         console.error(`Push file failed [${relPath}]: ${err.message}`);
+        failedCount++;
       }
     }
 
@@ -1222,7 +1247,66 @@ class CarbonSyncDevice extends EventEmitter {
       try { engineFolder.scanner.markPeerDiscovered(peerId); } catch {}
     }
 
-    console.log(`${folder.name}: push to ${peerInfo.deviceName} complete`);
+    // Zero progress + failures → exponential backoff for this peer+folder, so
+    // a push that can't converge retries occasionally instead of every 15s.
+    this._recordPushOutcome(peerInfo, folder.name, { pushed: pushedCount, failed: failedCount });
+
+    console.log(`${folder.name}: push to ${peerInfo.deviceName} complete (${pushedCount} sent, ${failedCount} failed)`);
+  }
+
+  // ---- Push retry backoff (per peer+folder) ----
+  //
+  // The 15s quick-sync re-attempts any folder whose root hash differs from the
+  // peer's. When a push can never converge (huge file the old peer rejects, a
+  // guard tripped on their side, disk full…) that loop used to re-push the
+  // SAME files every cycle, forever — pegging CPU/RAM and the network. These
+  // helpers grade each full-push outcome: clean progress clears the backoff;
+  // zero-progress-with-failures escalates it (1m → 4m → 16m → 30m cap). Local
+  // watcher changes and user/MCP-triggered syncs clear it so real work is
+  // never delayed.
+
+  _pushBackoffActive(peerInfo, folderName) {
+    const bo = peerInfo?._pushBackoff?.get(folderName);
+    return !!bo && Date.now() < bo.until;
+  }
+
+  _recordPushOutcome(peerInfo, folderName, { pushed, failed }) {
+    if (!peerInfo) return;
+    if (!peerInfo._pushBackoff) peerInfo._pushBackoff = new Map();
+    if (failed > 0 && pushed === 0) {
+      const prev = peerInfo._pushBackoff.get(folderName) || { fails: 0 };
+      const fails = prev.fails + 1;
+      const delayMs = Math.min(30 * 60 * 1000, 60 * 1000 * Math.pow(4, fails - 1));
+      peerInfo._pushBackoff.set(folderName, { fails, until: Date.now() + delayMs });
+      console.warn(`${folderName}: push to ${peerInfo.deviceName || 'peer'} made no progress (${failed} failures) — backing off ${Math.round(delayMs / 1000)}s`);
+    } else {
+      peerInfo._pushBackoff.delete(folderName);
+    }
+  }
+
+  _hubBackoffActive(folderName) {
+    const bo = this._hubPushBackoff?.get(folderName);
+    return !!bo && Date.now() < bo.until;
+  }
+
+  _recordHubPushOutcome(folderName, { pushed, failed }) {
+    if (!this._hubPushBackoff) this._hubPushBackoff = new Map();
+    if (failed > 0 && pushed === 0) {
+      const prev = this._hubPushBackoff.get(folderName) || { fails: 0 };
+      const fails = prev.fails + 1;
+      const delayMs = Math.min(30 * 60 * 1000, 60 * 1000 * Math.pow(4, fails - 1));
+      this._hubPushBackoff.set(folderName, { fails, until: Date.now() + delayMs });
+      console.warn(`${folderName}: push to hub made no progress (${failed} failures) — backing off ${Math.round(delayMs / 1000)}s`);
+    } else {
+      this._hubPushBackoff.delete(folderName);
+    }
+  }
+
+  _clearPushBackoff(folderName) {
+    for (const [, peerInfo] of this.peerConnections || []) {
+      peerInfo._pushBackoff?.delete(folderName);
+    }
+    this._hubPushBackoff?.delete(folderName);
   }
 
   /**
@@ -1768,34 +1852,31 @@ class CarbonSyncDevice extends EventEmitter {
     try { stat = await fsp.stat(absPath); } catch { return; }
     if (!stat.isFile()) return;
 
-    const hash = crypto.createHash('sha256');
-    const data = await fsp.readFile(absPath);
-    const fileHash = hash.update(data).digest('hex');
+    // Stream hash + bytes — never the whole file on the heap (huge files used
+    // to become one >MAX_FRAME_SIZE frame the hub's parser rejects).
+    const fileHash = await hashFileSha256(absPath);
 
     // Send metadata
     const response = await this.hubConnection.request({
       type: MSG.FILE_PUSH,
       folder: folder.name,
       path: relPath,
-      size: data.length,
+      size: stat.size,
       hash: fileHash,
       mtime_ms: Math.floor(stat.mtimeMs),
     }, 30000);
 
     if (response.status === 'skip') return; // Hub already has this version
 
-    // Send binary data
-    const header = Buffer.alloc(5);
-    header.writeUInt32BE(data.length + 1);
-    header[4] = 0xFF;
-    this.hubConnection.socket.write(Buffer.concat([header, data]));
+    // Send binary data in backpressured chunks
+    const bytesSent = await sendFileAsBinaryFrames(this.hubConnection.socket, absPath);
 
     // Send transfer end
     writeFrame(this.hubConnection.socket, {
       type: 'transfer_end',
       folder: folder.name,
       path: relPath,
-      bytesSent: data.length,
+      bytesSent,
     });
   }
 
@@ -1851,13 +1932,18 @@ class CarbonSyncDevice extends EventEmitter {
 
     console.log(`${folder.name} push: ${needed.length} files needed by hub, ${toDelete.length} deletions`);
 
+    let pushedCount = 0;
+    let failedCount = 0;
     for (const relPath of needed) {
       try {
         await this._pushFile(folder, relPath);
+        pushedCount++;
       } catch (err) {
         console.error(`Push failed [${relPath}]: ${err.message}`);
+        failedCount++;
       }
     }
+    this._recordHubPushOutcome(folder.name, { pushed: pushedCount, failed: failedCount });
 
     // Push deletions
     for (const relPath of toDelete) {
@@ -1920,12 +2006,11 @@ class CarbonSyncDevice extends EventEmitter {
             try { stat = await fsp.stat(absPath); } catch { continue; }
             if (!stat.isFile()) continue;
 
-            const data = await fsp.readFile(absPath);
-            const hash = crypto.createHash('sha256').update(data).digest('hex');
+            const hash = await hashFileSha256(absPath);
 
             const resp = await peerInfo.client.request({
               type: MSG.FILE_PUSH, folder: folderName, path: change.path,
-              size: data.length, hash, mtime_ms: Math.floor(stat.mtimeMs),
+              size: stat.size, hash, mtime_ms: Math.floor(stat.mtimeMs),
             }, 30000);
 
             if (resp.type === 'error') {
@@ -1936,12 +2021,9 @@ class CarbonSyncDevice extends EventEmitter {
             }
             if (resp.status === 'skip') continue;
 
-            const header = Buffer.alloc(5);
-            header.writeUInt32BE(data.length + 1);
-            header[4] = 0xFF;
-            peerInfo.client.socket.write(Buffer.concat([header, data]));
+            const bytesSent = await sendFileAsBinaryFrames(peerInfo.client.socket, absPath);
             writeFrame(peerInfo.client.socket, {
-              type: 'transfer_end', folder: folderName, path: change.path, bytesSent: data.length,
+              type: 'transfer_end', folder: folderName, path: change.path, bytesSent,
             });
           }
         } catch (err) {
@@ -1963,7 +2045,7 @@ class CarbonSyncDevice extends EventEmitter {
           await this._handleBlockRequest(client, msg);
           break;
         case MSG.FILE_PUSH:
-          this._handleFilePushStart(client, msg);
+          await this._handleFilePushStart(client, msg);
           break;
         case MSG.FILE_DELETE_PUSH:
           await this._handleFileDeletePush(client, msg);
@@ -2037,7 +2119,7 @@ class CarbonSyncDevice extends EventEmitter {
     return null;
   }
 
-  _handleFilePushStart(client, msg) {
+  async _handleFilePushStart(client, msg) {
     const folder = this._findEngineFolder(msg.folder);
     if (!folder) {
       const errMsg = `FILE_PUSH rejected: unknown folder '${msg.folder}' (engine has: ${[...(this.engine?.getFolderNames() || [])].join(', ')})`;
@@ -2054,24 +2136,53 @@ class CarbonSyncDevice extends EventEmitter {
       return;
     }
 
-    // Set up binary collector for this client
-    client._pushPending = {
+    // Spool incoming bytes straight to a .carbonsync.tmp next to the target
+    // (same volume → atomic rename) and hash incrementally — receive memory is
+    // O(chunk), not O(file). Collecting chunks in RAM OOM'd the daemon on
+    // multi-GB game files (2026-06-10).
+    const absPath = path.join(folder.path, msg.path);
+    const tmpPath = absPath + '.carbonsync.tmp';
+    let stream;
+    try {
+      await fsp.mkdir(path.dirname(absPath), { recursive: true });
+      stream = fs.createWriteStream(tmpPath);
+    } catch (err) {
+      console.error(`FILE_PUSH spool open failed [${msg.path}]: ${err.message}`);
+      writeFrame(client.socket, { type: MSG.ERROR, message: 'Spool open failed', _requestId: msg._requestId });
+      return;
+    }
+
+    const pending = {
       folder: msg.folder,
       path: msg.path,
       hash: msg.hash,
       size: msg.size,
       mtime_ms: msg.mtime_ms,
-      chunks: [],
       requestId: msg._requestId,
       existingMtime: existing?.mtime_ms || 0,
+      absPath,
+      tmpPath,
+      stream,
+      hasher: crypto.createHash('sha256'),
+      received: 0,
+      writeError: null,
     };
+    stream.on('error', (err) => { pending.writeError = err; });
+    client._pushPending = pending;
 
     writeFrame(client.socket, { type: MSG.FILE_PUSH_ACK, status: 'ready', _requestId: msg._requestId });
   }
 
   _handleBinary(client, data) {
-    if (client._pushPending) {
-      client._pushPending.chunks.push(data);
+    const p = client._pushPending;
+    if (!p || p.writeError) return;
+    p.hasher.update(data);
+    p.received += data.length;
+    if (!p.stream.write(data)) {
+      // Disk can't keep up — pause the socket so TCP backpressure reaches the
+      // sender instead of buffering the file in our heap.
+      client.socket.pause();
+      p.stream.once('drain', () => { try { client.socket.resume(); } catch {} });
     }
   }
 
@@ -2080,20 +2191,25 @@ class CarbonSyncDevice extends EventEmitter {
     if (!pending) return;
     client._pushPending = null;
 
+    await new Promise((res) => pending.stream.end(res));
+
     const folder = this._findEngineFolder(pending.folder);
-    if (!folder) return;
-
-    const fileData = Buffer.concat(pending.chunks);
-
-    // Verify hash
-    const hash = crypto.createHash('sha256').update(fileData).digest('hex');
-    if (hash !== pending.hash) {
-      console.warn(`Push hash mismatch for ${pending.path} from ${client.deviceName}`);
+    if (!folder || pending.writeError) {
+      if (pending.writeError) console.error(`Push spool failed [${pending.path}]: ${pending.writeError.message}`);
+      await fsp.unlink(pending.tmpPath).catch(() => {});
       return;
     }
 
-    const absPath = path.join(folder.path, pending.path);
-    const tmpPath = absPath + '.carbonsync.tmp';
+    // Verify hash (computed incrementally as chunks arrived)
+    const hash = pending.hasher.digest('hex');
+    if (hash !== pending.hash) {
+      console.warn(`Push hash mismatch for ${pending.path} from ${client.deviceName}`);
+      await fsp.unlink(pending.tmpPath).catch(() => {});
+      return;
+    }
+
+    const absPath = pending.absPath;
+    const tmpPath = pending.tmpPath;
 
     try {
       // Phase 6 P0: shrink-guard runs FIRST — before the mtime-based
@@ -2109,7 +2225,8 @@ class CarbonSyncDevice extends EventEmitter {
         absPath,
         relPath: pending.path,
         tmpPath,
-        fileData,
+        incomingSize: pending.received,
+        spoolPath: tmpPath,
         peerName: client.deviceName || 'peer',
       });
       if (!proceed) return;
@@ -2118,12 +2235,12 @@ class CarbonSyncDevice extends EventEmitter {
       const existing = folder.scanner.getFile(pending.path);
       if (existing && existing.hash !== pending.hash) {
         if (existing.mtime_ms > pending.mtime_ms) {
-          // Hub's version is newer — save incoming as conflict
+          // Hub's version is newer — keep incoming as conflict (move the spool)
           const ext = path.extname(pending.path);
           const base = pending.path.slice(0, pending.path.length - ext.length);
           const conflictPath = path.join(folder.path, `${base}.conflict.${client.deviceName}.${Date.now()}${ext}`);
           await fsp.mkdir(path.dirname(conflictPath), { recursive: true });
-          await fsp.writeFile(conflictPath, fileData);
+          await fsp.rename(tmpPath, conflictPath);
           console.log(`Conflict: ${pending.path} — hub version newer, incoming saved as conflict`);
           return;
         } else {
@@ -2135,10 +2252,8 @@ class CarbonSyncDevice extends EventEmitter {
         }
       }
 
-      // Write file
-      await fsp.mkdir(path.dirname(absPath), { recursive: true });
+      // Promote the spooled tmp into place
       this._markRecentlyWritten(pending.folder, pending.path);
-      await fsp.writeFile(tmpPath, fileData);
       if (pending.mtime_ms) {
         const mtime = new Date(pending.mtime_ms);
         await fsp.utimes(tmpPath, mtime, mtime);
@@ -2653,7 +2768,7 @@ class CarbonSyncDevice extends EventEmitter {
           try {
             // Push-before-pull for 'both': prevents stale peer index from
             // inferring deletions for files we just added locally.
-            if (dir === 'push' || dir === 'both') {
+            if ((dir === 'push' || dir === 'both') && !this._pushBackoffActive(peerInfo, folder.name)) {
               await this._pushFullFolderToPeer(peerInfo, folder);
             }
             if (dir === 'receive' || dir === 'both') {
@@ -2693,7 +2808,7 @@ class CarbonSyncDevice extends EventEmitter {
 
           try {
             // Push-before-pull for 'both': see _syncWithPeer comment.
-            if (dir === 'push' || dir === 'both') await this._pushFullFolder(folder);
+            if ((dir === 'push' || dir === 'both') && !this._hubBackoffActive(folder.name)) await this._pushFullFolder(folder);
             if (dir === 'receive' || dir === 'both') await this._pullFolder(folder);
           } catch (err) {
             console.error(`Quick hub sync failed [${folder.name}]: ${err.message}`);
@@ -2741,6 +2856,8 @@ class CarbonSyncDevice extends EventEmitter {
       this._logEngineNotReady('user-triggered-syncFolder');
       throw new Error('Engine not ready — initial scan in progress. Please wait.');
     }
+    // An explicit user/MCP sync means "try NOW" — drop any retry backoff.
+    this._clearPushBackoff(folderName);
     // Rescan local files first. Default force=true for user-triggered rescans;
     // the periodic safety-net passes force=false so a just-scanned folder is
     // skipped by the 60s cache instead of re-walked.
