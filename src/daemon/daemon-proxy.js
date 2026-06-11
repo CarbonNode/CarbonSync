@@ -32,7 +32,9 @@ class DaemonProxy extends EventEmitter {
     const scriptPath = path.join(__dirname, 'daemon-process.js');
     this._process = fork(scriptPath, [this.configDir], {
       stdio: ['pipe', 'pipe', 'pipe', 'ipc'],
-      execArgv: ['--max-old-space-size=8192'],
+      // 2 GB heap cap: a hub indexing ~450k files ballooned to 1.7-2.4 GB WS under the old
+      // 8 GB allowance — overcommit on a 32 GB box that also grants WSL 20 GB (2026-06-10).
+      execArgv: ['--max-old-space-size=2048'],
     });
     this._alive = true;
 
